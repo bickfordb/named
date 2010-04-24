@@ -6,8 +6,6 @@ CFLAGS += $$(pkg-config --cflags --libs sqlite3)
 
 all: bin/named
 
-clean:
-
 bin/named: named.c
 	install -d bin
 	$(CC) $(CFLAGS) -o $@ $+
