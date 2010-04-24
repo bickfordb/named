@@ -1,8 +1,8 @@
 CC ?= gcc
-C_FLAGS += -levent -lglib-2.0 -lsqlite3 -std=c99
-C_FLAGS += -fnested-functions
-LDFLAGS += -L/usr/local/lib 
-LDFLAGS += -L/opt/local/lib
+CFLAGS = -std=c99
+CFLAGS += $$(pkg-config --cflags --libs glib-2.0)
+CFLAGS += $$(pkg-config --cflags --libs libevent)
+CFLAGS += $$(pkg-config --cflags --libs sqlite3)
 
 all: bin/named
 
@@ -10,14 +10,12 @@ clean:
 
 bin/named: named.c
 	install -d bin
-	$(CC) $(C_FLAGS) $(LDFLAGS) -o $@ $+
+	$(CC) $(CFLAGS) -o $@ $+
 
 clean-named:
 	- rm -rf bin/named
 	
 clean: clean-named
-
-
 
 test: bin/named test.db
 	bin/named test.db
