@@ -1,7 +1,7 @@
-#include <event-config.h>
-
 #include <sys/types.h>
+#include <unistd.h>
 
+#include <event-config.h>
 #include <alloca.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -22,33 +22,37 @@
 #include <sqlite3.h>
 
 typedef enum {
-    TxtQueryType = 16,
-    WildcardQueryType = 255
-} QueryType;
+    NamedTxtQueryType = 16,
+    NamedWildcardQueryType = 255
+} NamedQueryType;
 
 typedef enum {
-    InternetQueryClass = 1,
-    WildcardQueryClass = 255
-} QueryClass;
+    NamedInternetQueryClass = 1,
+    NamedWildcardQueryClass = 255
+} NamedQueryClass;
 
-typedef void (*AnswerFunc)(const char *name, const char *data, int data_len, int ttl, QueryClass query_class, QueryType query_type);
+typedef enum {
+    NamedDebugLogLevel,
+    NamedInfoLogLevel,
+    NamedErrorLogLevel
+} NamedLogLevel;
 
-// Prototypes
-static void query_name(const char *name, QueryClass qclass, QueryType qtype, AnswerFunc);
-static void evdns_server_callback(struct evdns_server_request *req, void *data);
-static void fmt_txt_buf(const uint8_t *in_data, int in_len, uint8_t *out_data, int *out_len, uint8_t max_chunk_size);
+typedef void (*NamedAnswerFunc)(const char *name, const char *data, int data_len, int ttl, NamedQueryClass query_class, NamedQueryType query_type);
 
-// Globals
-const int TTL = 300;
-sqlite3 *db = NULL;
-const char *COL_DATA = "data";
-const char *COL_TTL = "ttl";
-const char *COL_QCLASS = "qclass";
-const char *COL_QTYPE = "qtype";
-const char *COL_NAME = "name";
+static void named_query_name_class_qtype(const char *name, NamedQueryClass qclass, NamedQueryType qtype, NamedAnswerFunc);
+static void named_on_evdns_request(struct evdns_server_request *req, void *data);
+static void named_enc_character_string(const uint8_t *in_data, int in_len, uint8_t *out_data, int *out_len, uint8_t max_chunk_size);
 
-// Macros
-#define EV_CHECK(MSG, F) \
+static const int NAMED_TTL = 300;
+static sqlite3 *named_db = NULL;
+static const char *NAMED_COL_DATA = "data";
+static const char *NAMED_COL_TTL = "ttl";
+static const char *NAMED_COL_QCLASS = "qclass";
+static const char *NAMED_COL_QTYPE = "qtype";
+static const char *NAMED_COL_NAME = "name";
+static NamedLogLevel named_log_level = NamedInfoLogLevel;
+
+#define NAMED_EV_CHECK(MSG, F) \
 { \
     if (F < 0) { \
         fprintf(stderr, "failed to " MSG); \
@@ -56,78 +60,74 @@ const char *COL_NAME = "name";
     } \
 }
 
+#define NAMED_LOG_DEBUG(FMT, ...) NAMED_LOG(NamedDebugLogLevel, "DEBUG", FMT, ##__VA_ARGS__)
+#define NAMED_LOG_INFO(FMT, ...) NAMED_LOG(NamedInfoLogLevel, "INFO", FMT, ##__VA_ARGS__)
+#define NAMED_LOG_ERROR(FMT, ...) NAMED_LOG(NamedErrorLogLevel, "ERROR", FMT, ##__VA_ARGS__)
+#define NAMED_LOG(LOG_LEVEL, LEVEL_NAME, FMT, ...) { \
+    if (LOG_LEVEL >= named_log_level) {\
+        fprintf(stderr, "%s:%d\t%s\t" FMT "\n", __FILE__, __LINE__, LEVEL_NAME, ##__VA_ARGS__);\
+    }\
+}
 
-// Definitions
-static void query_name(const char *name, QueryClass qclass, QueryType qtype, AnswerFunc callback) {
+static void named_query_name_class_qtype(const char *name, NamedQueryClass qclass, NamedQueryType qtype, NamedAnswerFunc on_answer) {
   char *error_msg = NULL;
   char sql[256 + strlen(name)];
-    fprintf(stderr, "query: %s, class: %d, type: %d\n", name, qtype, qclass);
+    NAMED_LOG_DEBUG("query: %s, class: %d, type: %d", name, qtype, qclass);
 
-    if (qtype != WildcardQueryType && qclass != WildcardQueryClass)
+    if (qtype != NamedWildcardQueryType && qclass != NamedWildcardQueryClass)
         sprintf(sql, "SELECT name, qtype, qclass, data, ttl FROM responses WHERE name = '%s' AND qclass = %d AND qtype = %d", name, (int)qclass, (int)qtype);
-    else if (qtype == WildcardQueryType) 
+    else if (qtype == NamedWildcardQueryType)
         sprintf(sql, "SELECT name, qtype, qclass, data, ttl FROM responses WHERE name = '%s' AND qclass = %d", name, (int)qclass);
-    else if (qclass == WildcardQueryClass) 
+    else if (qclass == NamedWildcardQueryClass)
         sprintf(sql, "SELECT name, qtype, qclass, data, ttl FROM responses WHERE name = '%s' AND qtype = %d", name, (int)qtype);
-    else 
+    else
         sprintf(sql, "SELECT name, qtype, qclass, data, ttl FROM responses WHERE name = '%s'", name);
 
   int query_name_response(void *ctx, int col_count, char **data, char **column_names) {
       const char *response_data = "";
       const char *response_name = "";
-      QueryClass response_qclass = InternetQueryClass;
-      QueryType response_qtype = 0;
-      int response_ttl = TTL;
+      NamedQueryClass response_qclass = NamedInternetQueryClass;
+      NamedQueryType response_qtype = 0;
+      int response_ttl = NAMED_TTL;
       int response_data_len = 0;
       for (int i = 0; i < col_count; i++) {
           const char *col = column_names[i];
           const char *val = data[i];
           if (val == NULL)
               continue;
-          if (strcmp(col, COL_DATA) == 0) {
+          if (strcmp(col, NAMED_COL_DATA) == 0) {
               response_data = val;
-              response_data_len = strlen(val);  
-          } else if (strcmp(col, COL_TTL) == 0) 
+              response_data_len = strlen(val);
+          } else if (strcmp(col, NAMED_COL_TTL) == 0)
               response_ttl = atoi(val);
-          else if (strcmp(col, COL_NAME) == 0)
+          else if (strcmp(col, NAMED_COL_NAME) == 0)
               response_name = val;
-          else if (strcmp(col, COL_QCLASS) == 0)
+          else if (strcmp(col, NAMED_COL_QCLASS) == 0)
               response_qclass = atoi(val);
-          else if (strcmp(col, COL_QTYPE) == 0)
+          else if (strcmp(col, NAMED_COL_QTYPE) == 0)
               response_qtype = atoi(val);
       }
-      
-      if (response_qtype == TxtQueryType) {
+
+      if (response_qtype == NamedTxtQueryType) {
            int buf_size = response_data_len + (response_data_len / 255) + 16;
            char *buf = alloca(buf_size);
-           fmt_txt_buf(response_data, strlen(response_data), buf, &buf_size, 255);
+           named_enc_character_string(response_data, strlen(response_data), buf, &buf_size, 255);
            response_data = buf;
            response_data_len = buf_size;
       }
-      callback(response_name, response_data, response_data_len, response_ttl, response_qclass, response_qtype);
+      on_answer(response_name, response_data, response_data_len, response_ttl, response_qclass, response_qtype);
       return 0;
-  } 
+  }
 
-  int rc = sqlite3_exec(db, sql, query_name_response, 0, &error_msg);
+  int rc = sqlite3_exec(named_db, sql, query_name_response, 0, &error_msg);
   if (rc != SQLITE_OK) {
-      fprintf(stderr, "SQL Error: %s\n", error_msg);
+      NAMED_LOG_ERROR("SQL Error: %s", error_msg);
       sqlite3_free(error_msg);
       exit(1);
   }
 }
 
-
-int count_char(uint8_t *buf, int buf_len, uint8_t byte) {
-    int num = 0;
-    int i =0;
-    for (int i = 0; i < buf_len; i++) {
-        if (buf[i] == byte) 
-            num++; 
-    }
-    return num;
-}
-
-static void fmt_txt_buf(const uint8_t *in_data, int in_len, uint8_t *out_data, int *out_len, uint8_t max_chunk_size) {
+static void named_enc_character_string(const uint8_t *in_data, int in_len, uint8_t *out_data, int *out_len, uint8_t max_chunk_size) {
     int remaining = in_len;
     int written = 0;
     for (int i = 0; i < in_len && written < *out_len; i++) {
@@ -138,21 +138,22 @@ static void fmt_txt_buf(const uint8_t *in_data, int in_len, uint8_t *out_data, i
             written++;
         }
         out_data[written] = in_data[i];
-        written++; 
+        written++;
     }
     *out_len = written;
-}  
+}
 
-static void evdns_server_callback(struct evdns_server_request *req, void *data) {
+
+static void named_on_evdns_request(struct evdns_server_request *req, void *data) {
     int ttl = 300;
-    fprintf(stderr, "request\n");
-    fprintf(stderr, "replying to request\n");
+    NAMED_LOG_DEBUG("rx request");
 
     for (int i = 0; i < req->nquestions; i++) {
         struct evdns_server_question *question = req->questions[i];
-        void on_answer(const char *name, const char *data, int data_len, int ttl, QueryClass qclass, QueryType qtype) { 
-            fprintf(stderr, "answer name:%s, data:%s\n", name, data);
-            EV_CHECK("add reply", evdns_server_request_add_reply(
+        void on_answer(const char *name, const char *data, int data_len, int ttl, NamedQueryClass qclass, NamedQueryType qtype) {
+            NAMED_LOG_DEBUG("answer name: %s, data: %s", name, data);
+
+            NAMED_EV_CHECK("add reply", evdns_server_request_add_reply(
                 req,
                 EVDNS_ANSWER_SECTION,
                 name,
@@ -163,33 +164,42 @@ static void evdns_server_callback(struct evdns_server_request *req, void *data) 
                 0,
                 data));
         }
-        query_name(question->name, question->dns_question_class, question->type, on_answer);
+        named_query_name_class_qtype(question->name, question->dns_question_class, question->type, on_answer);
     }
-    EV_CHECK("respond", evdns_server_request_respond(req, 0));
-    
-    fprintf(stderr, "responded\n");
+    NAMED_EV_CHECK("respond", evdns_server_request_respond(req, 0));
+
+    NAMED_LOG_DEBUG("responded");
 }
 
-static void logger(int is_warn, const char *msg) {
+static void named_logger(int is_warn, const char *msg) {
     fprintf(stderr, "%s: %s\n", is_warn ? "WARN" : "INFO", msg);
 }
 
 int main(int argc, char **argv) {
-
+    NAMED_LOG_INFO("startup")
     struct event_base *event_base = NULL;
     struct evdns_base *evdns_base = NULL;
-
+    int ch = -1;
+    while ((ch = getopt(argc, argv, "d")) != -1) {
+        switch (ch) {
+        case 'd':
+            named_log_level = NamedDebugLogLevel;
+            break;
+        }
+    }
+    argc -= optind;
+    argv += optind;
     {
-      int rc = sqlite3_open(argv[1], &db);
-      if (rc){
-        fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
+      int rc = sqlite3_open(argv[0], &named_db);
+      if (rc) {
+        NAMED_LOG_ERROR("Can't open database: %s", sqlite3_errmsg(named_db));
+        sqlite3_close(named_db);
         exit(1);
       }
     }
     event_base = event_base_new();
     evdns_base = evdns_base_new(event_base, 0);
-    evdns_set_log_fn(logger);
+    evdns_set_log_fn(named_logger);
 
     int sock;
     struct sockaddr_in my_addr;
@@ -206,12 +216,13 @@ int main(int argc, char **argv) {
         perror("bind");
         exit(1);
     }
-    evdns_add_server_port_with_base(event_base, sock, 0, evdns_server_callback, NULL);
+    evdns_add_server_port_with_base(event_base, sock, 0, named_on_evdns_request, NULL);
 
     event_base_dispatch(event_base);
-    sqlite3_close(db);
+    sqlite3_close(named_db);
+    NAMED_LOG_INFO("done")
     return 0;
 }
 
-#undef EV_CHECK
+#undef NAMED_EV_CHECK
 

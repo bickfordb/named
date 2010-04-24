@@ -19,7 +19,7 @@ clean-named:
 clean: clean-named
 
 test: bin/named test.db
-	bin/named test.db
+	bin/named -d test.db
 
 test.db: init.sql fixture.sql
 	sqlite3 test.db <drop.sql
