@@ -1,6 +1,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <pwd.h>
 
 #include <event-config.h>
 #include <alloca.h>
@@ -188,18 +189,34 @@ static void named_logger(int is_warn, const char *msg)
     fprintf(stderr, "%s: %s\n", is_warn ? "WARN" : "INFO", msg);
 }
 
+static void drop_privileges(const char *pw_name)
+{
+    struct passwd *pwd;
+    if (getuid() == 0 && strlen(pw_name)) {
+        pwd = getpwnam(pw_name);
+        setuid(pwd->pw_uid);
+        NAMED_LOG_INFO("dropped uid to %d", pwd->pw_uid);
+        if (getgid() == 0 && pwd->pw_gid)  {
+            setgid(pwd->pw_gid);
+            NAMED_LOG_INFO("dropped gid to %d", pwd->pw_gid);
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     NAMED_LOG_INFO("startup")
     struct event_base *event_base = NULL;
     struct evdns_base *evdns_base = NULL;
+    struct sockaddr_in my_addr;
     int rc;
     int sock;
     int port = 10053;
-    struct sockaddr_in my_addr;
+
+    char *priv_user = calloc(1024, sizeof(char));
 
     int ch = -1;
-    while ((ch = getopt(argc, argv, "dp:")) != -1) {
+    while ((ch = getopt(argc, argv, "dp:u:")) != -1) {
         switch (ch) {
         case 'd':
             named_log_level = NamedDebugLogLevel;
@@ -207,6 +224,9 @@ int main(int argc, char **argv)
         case 'p':
             if (1 <= atoi(optarg) < (1 << 16))
                 port = atoi(optarg);
+            break;
+        case 'u':
+            strcpy(priv_user, optarg);
             break;
         }
     }
@@ -235,6 +255,11 @@ int main(int argc, char **argv)
         perror("bind");
         exit(1);
     }
+
+    /* bind(2) is done, it's time to drop privileges */
+    drop_privileges(priv_user);
+    free(priv_user);
+
     evdns_add_server_port_with_base(event_base, sock, 0, named_on_evdns_request, NULL);
 
     event_base_dispatch(event_base);
