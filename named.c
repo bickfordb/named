@@ -1,5 +1,6 @@
 #include <sys/types.h>
 #include <unistd.h>
+#include <getopt.h>
 
 #include <event-config.h>
 #include <alloca.h>
