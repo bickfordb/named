@@ -1,0 +1,26 @@
+#!/usr/bin/env python
+
+import sys
+import optparse
+import sqlite3
+import socket
+
+if __name__ == '__main__':
+	parser = optparse.OptionParser()
+	parser.add_option('-d', '--db', dest='database', default='test.db', help='which sqlite database to use')
+	parser.add_option('-n', '--name', dest='name', help='the dns name to use')
+	parser.add_option('-i', '--ip', dest='ip', help='the ip address to use')
+	opts, args = parser.parse_args()
+
+	if not (opts.database and opts.name and opts.ip):
+		print >> sys.stderr, 'missing args'
+		sys.exit(1)
+	if args:
+		print >> sys.stderr, 'extra args'
+		sys.exit(1)
+
+	conn = sqlite3.connect(opts.database)
+	c = conn.cursor()
+	c.execute('DELETE FROM responses WHERE name = ?', (opts.name,))
+	c.execute('INSERT INTO responses (name, qclass, qtype, ttl, data) VALUES (?, 1, 1, 120, ?)', (opts.name, socket.inet_aton(opts.ip)))
+	conn.commit()
