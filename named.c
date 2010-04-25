@@ -69,7 +69,8 @@ static NamedLogLevel named_log_level = NamedInfoLogLevel;
     }\
 }
 
-static void named_query_name_class_qtype(const char *name, NamedQueryClass qclass, NamedQueryType qtype, NamedAnswerFunc on_answer) {
+static void named_query_name_class_qtype(const char *name, NamedQueryClass qclass, NamedQueryType qtype, NamedAnswerFunc on_answer)
+{
   char *error_msg = NULL;
   char sql[256 + strlen(name)];
     NAMED_LOG_DEBUG("query: %s, class: %d, type: %d", name, qtype, qclass);
@@ -127,7 +128,8 @@ static void named_query_name_class_qtype(const char *name, NamedQueryClass qclas
   }
 }
 
-static void named_enc_character_string(const uint8_t *in_data, int in_len, uint8_t *out_data, int *out_len, uint8_t max_chunk_size) {
+static void named_enc_character_string(const uint8_t *in_data, int in_len, uint8_t *out_data, int *out_len, uint8_t max_chunk_size)
+{
     int remaining = in_len;
     int written = 0;
     for (int i = 0; i < in_len && written < *out_len; i++) {
@@ -143,8 +145,8 @@ static void named_enc_character_string(const uint8_t *in_data, int in_len, uint8
     *out_len = written;
 }
 
-
-static void named_on_evdns_request(struct evdns_server_request *req, void *data) {
+static void named_on_evdns_request(struct evdns_server_request *req, void *data)
+{
     int ttl = 300;
     NAMED_LOG_DEBUG("rx request");
 
@@ -171,14 +173,20 @@ static void named_on_evdns_request(struct evdns_server_request *req, void *data)
     NAMED_LOG_DEBUG("responded");
 }
 
-static void named_logger(int is_warn, const char *msg) {
+static void named_logger(int is_warn, const char *msg)
+{
     fprintf(stderr, "%s: %s\n", is_warn ? "WARN" : "INFO", msg);
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv)
+{
     NAMED_LOG_INFO("startup")
     struct event_base *event_base = NULL;
     struct evdns_base *evdns_base = NULL;
+    int rc;
+    int sock;
+    struct sockaddr_in my_addr;
+
     int ch = -1;
     while ((ch = getopt(argc, argv, "d")) != -1) {
         switch (ch) {
@@ -189,20 +197,16 @@ int main(int argc, char **argv) {
     }
     argc -= optind;
     argv += optind;
-    {
-      int rc = sqlite3_open(argv[0], &named_db);
-      if (rc) {
+    rc = sqlite3_open(argv[0], &named_db);
+    if (rc) {
         NAMED_LOG_ERROR("Can't open database: %s", sqlite3_errmsg(named_db));
         sqlite3_close(named_db);
         exit(1);
-      }
     }
     event_base = event_base_new();
     evdns_base = evdns_base_new(event_base, 0);
     evdns_set_log_fn(named_logger);
 
-    int sock;
-    struct sockaddr_in my_addr;
     sock = socket(PF_INET, SOCK_DGRAM, 0);
     if (sock < 0) {
         perror("socket");
@@ -225,4 +229,3 @@ int main(int argc, char **argv) {
 }
 
 #undef NAMED_EV_CHECK
-
