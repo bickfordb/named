@@ -22,11 +22,20 @@
 #include <string.h>
 #include <sqlite3.h>
 
+/* Records whose type is <= 16 are describedin RFC 1035 */
 typedef enum {
-    NamedTxtQueryType = 16,
-    NamedWildcardQueryType = 255
+    NamedHostQueryType       = 1,  // A
+    NamedNameServerQueryType = 2,  // NS
+    NamedCanonicalQueryType  = 5,  // CNAME
+    NamedSOAQueryType        = 6,  // SOA
+    NamedPointerQueryType    = 12, // PTR
+    NamedMailQueryType       = 15, // MX
+    NamedTxtQueryType        = 16, // TXT
+    NamedQuadAQueryType      = 28, // AAAA, RFC 3596
+    NamedWildcardQueryType   = 255
 } NamedQueryType;
 
+/* Other classes aren't important, see sec 3.2.4 of RFC 1035 for details */
 typedef enum {
     NamedInternetQueryClass = 1,
     NamedWildcardQueryClass = 255
