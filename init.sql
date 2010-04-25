@@ -1,11 +1,10 @@
-
-create table if not exists responses (
-    id integer primary key,
-    name text key,
-    qclass integer,
-    qtype integer,
-    ttl integer,
-    data text
+CREATE TABLE IF NOT EXISTS responses (
+    id INTEGER PRIMARY KEY,
+    name TEXT KEY,
+    qclass INTEGER,
+    qtype INTEGER,
+    ttl INTEGER,
+    data BLOB
 );
 
-create index responses_name_idx on responses (name);
+CREATE INDEX responses_name_idx ON responses (name);
