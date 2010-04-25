@@ -72,8 +72,8 @@ static NamedLogLevel named_log_level = NamedInfoLogLevel;
 
 static void named_query_name_class_qtype(const char *name, NamedQueryClass qclass, NamedQueryType qtype, NamedAnswerFunc on_answer)
 {
-  char *error_msg = NULL;
-  char sql[256 + strlen(name)];
+    char *error_msg = NULL;
+    char sql[256 + strlen(name)];
     NAMED_LOG_DEBUG("query: %s, class: %d, type: %d", name, qtype, qclass);
 
     if (qtype != NamedWildcardQueryType && qclass != NamedWildcardQueryClass)
@@ -85,48 +85,48 @@ static void named_query_name_class_qtype(const char *name, NamedQueryClass qclas
     else
         sprintf(sql, "SELECT name, qtype, qclass, data, ttl FROM responses WHERE name = '%s'", name);
 
-  int query_name_response(void *ctx, int col_count, char **data, char **column_names) {
-      const char *response_data = "";
-      const char *response_name = "";
-      NamedQueryClass response_qclass = NamedInternetQueryClass;
-      NamedQueryType response_qtype = 0;
-      int response_ttl = NAMED_TTL;
-      int response_data_len = 0;
-      for (int i = 0; i < col_count; i++) {
-          const char *col = column_names[i];
-          const char *val = data[i];
-          if (val == NULL)
-              continue;
-          if (strcmp(col, NAMED_COL_DATA) == 0) {
-              response_data = val;
-              response_data_len = strlen(val);
-          } else if (strcmp(col, NAMED_COL_TTL) == 0)
-              response_ttl = atoi(val);
-          else if (strcmp(col, NAMED_COL_NAME) == 0)
-              response_name = val;
-          else if (strcmp(col, NAMED_COL_QCLASS) == 0)
-              response_qclass = atoi(val);
-          else if (strcmp(col, NAMED_COL_QTYPE) == 0)
-              response_qtype = atoi(val);
-      }
+    int query_name_response(void *ctx, int col_count, char **data, char **column_names) {
+        const char *response_data = "";
+        const char *response_name = "";
+        NamedQueryClass response_qclass = NamedInternetQueryClass;
+        NamedQueryType response_qtype = 0;
+        int response_ttl = NAMED_TTL;
+        int response_data_len = 0;
+        for (int i = 0; i < col_count; i++) {
+            const char *col = column_names[i];
+            const char *val = data[i];
+            if (val == NULL)
+                continue;
+            if (strcmp(col, NAMED_COL_DATA) == 0) {
+                response_data = val;
+                response_data_len = strlen(val);
+            } else if (strcmp(col, NAMED_COL_TTL) == 0)
+                response_ttl = atoi(val);
+            else if (strcmp(col, NAMED_COL_NAME) == 0)
+                response_name = val;
+            else if (strcmp(col, NAMED_COL_QCLASS) == 0)
+                response_qclass = atoi(val);
+            else if (strcmp(col, NAMED_COL_QTYPE) == 0)
+                response_qtype = atoi(val);
+        }
 
-      if (response_qtype == NamedTxtQueryType) {
-           int buf_size = response_data_len + (response_data_len / 255) + 16;
-           char *buf = alloca(buf_size);
-           named_enc_character_string(response_data, strlen(response_data), buf, &buf_size, 255);
-           response_data = buf;
-           response_data_len = buf_size;
-      }
-      on_answer(response_name, response_data, response_data_len, response_ttl, response_qclass, response_qtype);
-      return 0;
-  }
+        if (response_qtype == NamedTxtQueryType) {
+            int buf_size = response_data_len + (response_data_len / 255) + 16;
+            char *buf = alloca(buf_size);
+            named_enc_character_string(response_data, strlen(response_data), buf, &buf_size, 255);
+            response_data = buf;
+            response_data_len = buf_size;
+        }
+        on_answer(response_name, response_data, response_data_len, response_ttl, response_qclass, response_qtype);
+        return 0;
+    }
 
-  int rc = sqlite3_exec(named_db, sql, query_name_response, 0, &error_msg);
-  if (rc != SQLITE_OK) {
-      NAMED_LOG_ERROR("SQL Error: %s", error_msg);
-      sqlite3_free(error_msg);
-      exit(1);
-  }
+    int rc = sqlite3_exec(named_db, sql, query_name_response, 0, &error_msg);
+    if (rc != SQLITE_OK) {
+        NAMED_LOG_ERROR("SQL Error: %s", error_msg);
+        sqlite3_free(error_msg);
+        exit(1);
+    }
 }
 
 static void named_enc_character_string(const uint8_t *in_data, int in_len, uint8_t *out_data, int *out_len, uint8_t max_chunk_size)
