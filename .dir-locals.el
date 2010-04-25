@@ -1,0 +1,5 @@
+((nil . ((indent-tabs-mode . nil)
+		 (tab-width . 4)
+		 (fill-column . 80)))
+ (c-mode . ((c-file-style . "BSD")
+            (c-basic-offset . 4))))
