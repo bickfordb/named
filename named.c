@@ -195,13 +195,18 @@ int main(int argc, char **argv)
     struct evdns_base *evdns_base = NULL;
     int rc;
     int sock;
+    int port = 10053;
     struct sockaddr_in my_addr;
 
     int ch = -1;
-    while ((ch = getopt(argc, argv, "d")) != -1) {
+    while ((ch = getopt(argc, argv, "dp:")) != -1) {
         switch (ch) {
         case 'd':
             named_log_level = NamedDebugLogLevel;
+            break;
+        case 'p':
+            if (1 <= atoi(optarg) < (1 << 16))
+                port = atoi(optarg);
             break;
         }
     }
@@ -224,7 +229,7 @@ int main(int argc, char **argv)
     }
     evutil_make_socket_nonblocking(sock);
     my_addr.sin_family = AF_INET;
-    my_addr.sin_port = htons(10053);
+    my_addr.sin_port = htons(port);
     my_addr.sin_addr.s_addr = INADDR_ANY;
     if (bind(sock, (struct sockaddr*) &my_addr, sizeof(my_addr)) < 0) {
         perror("bind");
