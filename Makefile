@@ -3,15 +3,19 @@ CFLAGS += -std=c99
 CFLAGS += $$(pkg-config --cflags --libs glib-2.0)
 CFLAGS += $$(pkg-config --cflags --libs libevent)
 CFLAGS += $$(pkg-config --cflags --libs sqlite3)
-CFLAGS += -fnested-functions
+
+# Nested functions are disabled by default on Darwin
+ifeq ($(shell uname), Darwin)
+	CFLAGS += -fnested-functions
+endif
 
 all: bin/named
 
 bin:
 	install -d bin
 
-bin/named: named.c bin
-	$(CC) $(CFLAGS) -o $@ $<
+bin/named: named.c list.c list.h dns.c dns.h bin
+	$(CC) $(CFLAGS) -o $@ named.c list.c dns.c
 
 clean-named:
 	- rm -rf bin/named
