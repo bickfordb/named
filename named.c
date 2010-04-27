@@ -23,6 +23,9 @@
 #include <string.h>
 #include <sqlite3.h>
 
+#include "log.h"
+#include "dns.h"
+
 /* Records whose type is <= 16 are describedin RFC 1035 */
 typedef enum {
     NamedHostQueryType       = 1,  // A
@@ -42,12 +45,6 @@ typedef enum {
     NamedWildcardQueryClass = 255
 } NamedQueryClass;
 
-typedef enum {
-    NamedDebugLogLevel,
-    NamedInfoLogLevel,
-    NamedErrorLogLevel
-} NamedLogLevel;
-
 typedef void (*NamedAnswerFunc)(const char *name, const char *data, int data_len, int ttl, NamedQueryClass query_class, NamedQueryType query_type);
 
 static void named_query_name_class_qtype(const char *name, NamedQueryClass qclass, NamedQueryType qtype, NamedAnswerFunc);
@@ -61,7 +58,6 @@ static const char *NAMED_COL_TTL = "ttl";
 static const char *NAMED_COL_QCLASS = "qclass";
 static const char *NAMED_COL_QTYPE = "qtype";
 static const char *NAMED_COL_NAME = "name";
-static NamedLogLevel named_log_level = NamedInfoLogLevel;
 
 #define NAMED_EV_CHECK(MSG, F) \
 { \
@@ -71,20 +67,11 @@ static NamedLogLevel named_log_level = NamedInfoLogLevel;
     } \
 }
 
-#define NAMED_LOG_DEBUG(FMT, ...) NAMED_LOG(NamedDebugLogLevel, "DEBUG", FMT, ##__VA_ARGS__)
-#define NAMED_LOG_INFO(FMT, ...) NAMED_LOG(NamedInfoLogLevel, "INFO", FMT, ##__VA_ARGS__)
-#define NAMED_LOG_ERROR(FMT, ...) NAMED_LOG(NamedErrorLogLevel, "ERROR", FMT, ##__VA_ARGS__)
-#define NAMED_LOG(LOG_LEVEL, LEVEL_NAME, FMT, ...) { \
-    if (LOG_LEVEL >= named_log_level) {\
-        fprintf(stderr, "%s:%d\t%s\t" FMT "\n", __FILE__, __LINE__, LEVEL_NAME, ##__VA_ARGS__);\
-    }\
-}
-
 static void named_query_name_class_qtype(const char *name, NamedQueryClass qclass, NamedQueryType qtype, NamedAnswerFunc on_answer)
 {
     char *error_msg = NULL;
     char sql[256 + strlen(name)];
-    NAMED_LOG_DEBUG("query: %s, class: %d, type: %d", name, qtype, qclass);
+    LOG_DEBUG("query: %s, class: %d, type: %d", name, qtype, qclass);
 
     if (qtype != NamedWildcardQueryType && qclass != NamedWildcardQueryClass)
         sprintf(sql, "SELECT name, qtype, qclass, data, ttl FROM responses WHERE name = '%s' AND qclass = %d AND qtype = %d", name, (int)qclass, (int)qtype);
@@ -133,7 +120,7 @@ static void named_query_name_class_qtype(const char *name, NamedQueryClass qclas
 
     int rc = sqlite3_exec(named_db, sql, query_name_response, 0, &error_msg);
     if (rc != SQLITE_OK) {
-        NAMED_LOG_ERROR("SQL Error: %s", error_msg);
+        LOG_ERROR("SQL Error: %s", error_msg);
         sqlite3_free(error_msg);
         exit(1);
     }
@@ -159,12 +146,12 @@ static void named_enc_character_string(const uint8_t *in_data, int in_len, uint8
 static void named_on_evdns_request(struct evdns_server_request *req, void *data)
 {
     int ttl = 300;
-    NAMED_LOG_DEBUG("rx request");
+    LOG_DEBUG("rx request");
 
     for (int i = 0; i < req->nquestions; i++) {
         struct evdns_server_question *question = req->questions[i];
         void on_answer(const char *name, const char *data, int data_len, int ttl, NamedQueryClass qclass, NamedQueryType qtype) {
-            NAMED_LOG_DEBUG("answer name: %s, data: %s", name, data);
+            LOG_DEBUG("answer name: %s, data: %s", name, data);
 
             NAMED_EV_CHECK("add reply", evdns_server_request_add_reply(
                 req,
@@ -181,7 +168,7 @@ static void named_on_evdns_request(struct evdns_server_request *req, void *data)
     }
     NAMED_EV_CHECK("respond", evdns_server_request_respond(req, 0));
 
-    NAMED_LOG_DEBUG("responded");
+    LOG_DEBUG("responded");
 }
 
 static void named_logger(int is_warn, const char *msg)
@@ -195,17 +182,17 @@ static void drop_privileges(const char *pw_name)
     if (getuid() == 0 && strlen(pw_name)) {
         pwd = getpwnam(pw_name);
         setuid(pwd->pw_uid);
-        NAMED_LOG_INFO("dropped uid to %d", pwd->pw_uid);
+        LOG_INFO("dropped uid to %d", pwd->pw_uid);
         if (getgid() == 0 && pwd->pw_gid)  {
             setgid(pwd->pw_gid);
-            NAMED_LOG_INFO("dropped gid to %d", pwd->pw_gid);
+            LOG_INFO("dropped gid to %d", pwd->pw_gid);
         }
     }
 }
 
 int main(int argc, char **argv)
 {
-    NAMED_LOG_INFO("startup")
+    LOG_INFO("startup")
     struct event_base *event_base = NULL;
     struct evdns_base *evdns_base = NULL;
     struct sockaddr_in my_addr;
@@ -219,7 +206,7 @@ int main(int argc, char **argv)
     while ((ch = getopt(argc, argv, "dp:u:")) != -1) {
         switch (ch) {
         case 'd':
-            named_log_level = NamedDebugLogLevel;
+            log_level = LogDebugLevel;
             break;
         case 'p':
             if (1 <= atoi(optarg) < (1 << 16))
@@ -234,7 +221,7 @@ int main(int argc, char **argv)
     argv += optind;
     rc = sqlite3_open(argv[0], &named_db);
     if (rc) {
-        NAMED_LOG_ERROR("Can't open database: %s", sqlite3_errmsg(named_db));
+        LOG_ERROR("Can't open database: %s", sqlite3_errmsg(named_db));
         sqlite3_close(named_db);
         exit(1);
     }
@@ -260,11 +247,12 @@ int main(int argc, char **argv)
     drop_privileges(priv_user);
     free(priv_user);
 
-    evdns_add_server_port_with_base(event_base, sock, 0, named_on_evdns_request, NULL);
+    //evdns_add_server_port_with_base(event_base, sock, 0, named_on_evdns_request, NULL);
+    DNSPort *udp_port = dnsport_new(event_base, sock, false, NULL, NULL);
 
     event_base_dispatch(event_base);
     sqlite3_close(named_db);
-    NAMED_LOG_INFO("done")
+    LOG_INFO("done")
     return 0;
 }
 

@@ -1,44 +1,74 @@
 #include <stdlib.h>
 #include "list.h"
 
+struct _ListItem;
 struct _List { 
-    void *next;
-    void *item;
+    struct _ListItem *head;
+    struct _ListItem *tail;
+    int size;
 };
 
-List *list(void *item) {
-    return list_cons(NULL, item);
+struct _ListItem {
+    struct _ListItem *next;
+    void *value;
+};
+
+typedef struct _ListItem ListItem;
+
+List *list_new() {
+    return calloc(1, sizeof(List));
 }
 
-List *list_cons(List *tail, void *item) {
-    List *head = malloc(sizeof(List));
-    head->item = item;
-    head->next = tail;
-    return head;
+void list_append(List *list, void *item) { 
+    ListItem *list_item = calloc(1, sizeof(ListItem));
+    list_item->value = item;
+    if (list->head == NULL) {
+        list->head = list_item;
+        list->tail = list_item;
+    } else {
+        list->tail->next = list_item;
+        list->tail = list_item;
+    }     
+    list->size++;
 }
+
+void list_prepend(List *list, void *item) { 
+    ListItem *list_item = calloc(1, sizeof(ListItem));
+    list_item->value = item;
+    if (list->head == NULL) {
+        list->head = list_item;
+        list->tail = list_item;
+    } else {
+        list_item->next = list->head;
+        list->head = list_item;
+    }     
+    list->size++;
+}
+
 
 void list_free(List *list, ListFreeItemFunc free_func) {
-    if (list->next != NULL) 
-        list_free(list, free_func);     
-    if (list->item != NULL)
-        free_func(list->item);
+    ListItem *i = list->head; 
+    for (;;) {
+        if (i == NULL)
+            break;
+        free_func(i->value);
+        ListItem *last = i;
+        i = i->next;
+        free(last);
+    }
     free(list);
 }
 
 void list_iterate(List *list, ListIterateFunc iterate_func, void *context) {
     bool keep_going = true;
-    while (keep_going && list != NULL) {
-        iterate_func(list, context, list->item, &keep_going);
-        list = list->next; 
+    ListItem *i = list->head;
+    while (keep_going && i != NULL) {
+        iterate_func(list, context, i->value, &keep_going);
+        i = i->next; 
     }
 }
 
 int list_length(List *list) {
-    int i = 0;
-    while (list != NULL) { 
-        i++;
-        list = list->next;
-    }
-    return i;
+    return list->size;
 }
 
