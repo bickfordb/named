@@ -95,3 +95,14 @@ char *list_repr(List *list, ListReprFunc repr_func) {
     free(old_repr);
     return repr;
 }
+
+
+List *list_copy(List *other, ListCopyFunc copy_func) {
+    List *list = list_new();
+    void visitor(List *some_list, void *ctx, void *item, bool *keep_going) {
+        list_append(list, copy_func(item));
+    }
+    list_iterate(other, visitor, NULL);
+    return list;
+}
+

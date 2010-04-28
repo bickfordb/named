@@ -15,8 +15,8 @@ all: bin/named
 bin:
 	install -d bin
 
-bin/named: named.c list.c list.h dns.c dns.h log.h log.c buffer.h buffer.c bin
-	$(CC) $(CFLAGS) -o $@ named.c list.c dns.c log.c buffer.c
+bin/named: named.c list.c list.h dns.c dns.h log.h log.c buffer.h buffer.c util.c bin
+	$(CC) $(CFLAGS) -o $@ named.c list.c dns.c log.c buffer.c util.c
 
 clean-named:
 	- rm -rf bin/named

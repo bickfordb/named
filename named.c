@@ -25,30 +25,14 @@
 
 #include "log.h"
 #include "dns.h"
+#include "buffer.h"
+#include "list.h"
 
-/* Records whose type is <= 16 are describedin RFC 1035 */
-typedef enum {
-    NamedHostQueryType       = 1,  // A
-    NamedNameServerQueryType = 2,  // NS
-    NamedCanonicalQueryType  = 5,  // CNAME
-    NamedSOAQueryType        = 6,  // SOA
-    NamedPointerQueryType    = 12, // PTR
-    NamedMailQueryType       = 15, // MX
-    NamedTxtQueryType        = 16, // TXT
-    NamedQuadAQueryType      = 28, // AAAA, RFC 3596
-    NamedWildcardQueryType   = 255
-} NamedQueryType;
 
-/* Other classes aren't important, see sec 3.2.4 of RFC 1035 for details */
-typedef enum {
-    NamedInternetQueryClass = 1,
-    NamedWildcardQueryClass = 255
-} NamedQueryClass;
+typedef void (*NamedAnswerFunc)(DNSResourceRecord *record);
 
-typedef void (*NamedAnswerFunc)(const char *name, const char *data, int data_len, int ttl, NamedQueryClass query_class, NamedQueryType query_type);
-
-static void named_query_name_class_qtype(const char *name, NamedQueryClass qclass, NamedQueryType qtype, NamedAnswerFunc);
-static void named_on_evdns_request(struct evdns_server_request *req, void *data);
+static void named_query(const char *name, DNSQueryClass qclass, DNSQueryType qtype, NamedAnswerFunc);
+static void named_on_request(DNSRequest *req, void *data);
 static void named_enc_character_string(const uint8_t *in_data, int in_len, uint8_t *out_data, int *out_len, uint8_t max_chunk_size);
 
 static const int NAMED_TTL = 300;
@@ -59,25 +43,17 @@ static const char *NAMED_COL_QCLASS = "qclass";
 static const char *NAMED_COL_QTYPE = "qtype";
 static const char *NAMED_COL_NAME = "name";
 
-#define NAMED_EV_CHECK(MSG, F) \
-{ \
-    if (F < 0) { \
-        fprintf(stderr, "failed to " MSG); \
-        exit(1); \
-    } \
-}
-
-static void named_query_name_class_qtype(const char *name, NamedQueryClass qclass, NamedQueryType qtype, NamedAnswerFunc on_answer)
+static void named_query(const char *name, DNSQueryClass qclass, DNSQueryType qtype, NamedAnswerFunc on_answer)
 {
     char *error_msg = NULL;
     char sql[256 + strlen(name)];
     LOG_DEBUG("query: %s, class: %d, type: %d", name, qtype, qclass);
 
-    if (qtype != NamedWildcardQueryType && qclass != NamedWildcardQueryClass)
+    if (qtype != DNSWildcardQueryType && qclass != DNSWildcardQueryClass)
         sprintf(sql, "SELECT name, qtype, qclass, data, ttl FROM responses WHERE name = '%s' AND qclass = %d AND qtype = %d", name, (int)qclass, (int)qtype);
-    else if (qtype == NamedWildcardQueryType)
+    else if (qtype == DNSWildcardQueryType)
         sprintf(sql, "SELECT name, qtype, qclass, data, ttl FROM responses WHERE name = '%s' AND qclass = %d", name, (int)qclass);
-    else if (qclass == NamedWildcardQueryClass)
+    else if (qclass == DNSWildcardQueryClass)
         sprintf(sql, "SELECT name, qtype, qclass, data, ttl FROM responses WHERE name = '%s' AND qtype = %d", name, (int)qtype);
     else
         sprintf(sql, "SELECT name, qtype, qclass, data, ttl FROM responses WHERE name = '%s'", name);
@@ -85,36 +61,30 @@ static void named_query_name_class_qtype(const char *name, NamedQueryClass qclas
     int query_name_response(void *ctx, int col_count, char **data, char **column_names) {
         const char *response_data = "";
         const char *response_name = "";
-        NamedQueryClass response_qclass = NamedInternetQueryClass;
-        NamedQueryType response_qtype = 0;
-        int response_ttl = NAMED_TTL;
-        int response_data_len = 0;
+        DNSQueryClass qclass = DNSInternetQueryClass;
+        DNSQueryType qtype = DNSTxtQueryType;
+        uint32_t ttl = NAMED_TTL;
+        Buffer *buf = NULL;
         for (int i = 0; i < col_count; i++) {
             const char *col = column_names[i];
             const char *val = data[i];
             if (val == NULL)
                 continue;
             if (strcmp(col, NAMED_COL_DATA) == 0) {
-                response_data = val;
-                response_data_len = strlen(val);
+                buf = buffer_new((uint8_t *)val, strlen(val) + 1);
             } else if (strcmp(col, NAMED_COL_TTL) == 0)
-                response_ttl = atoi(val);
+                ttl = atoi(val);
             else if (strcmp(col, NAMED_COL_NAME) == 0)
-                response_name = val;
+                name = val;
             else if (strcmp(col, NAMED_COL_QCLASS) == 0)
-                response_qclass = atoi(val);
+                qclass = atoi(val);
             else if (strcmp(col, NAMED_COL_QTYPE) == 0)
-                response_qtype = atoi(val);
+                qtype = atoi(val);
         }
-
-        if (response_qtype == NamedTxtQueryType) {
-            int buf_size = response_data_len + (response_data_len / 255) + 16;
-            char *buf = alloca(buf_size);
-            named_enc_character_string(response_data, strlen(response_data), buf, &buf_size, 255);
-            response_data = buf;
-            response_data_len = buf_size;
-        }
-        on_answer(response_name, response_data, response_data_len, response_ttl, response_qclass, response_qtype);
+        DNSResourceRecord *record = dnsresourcerecord_new(name, qtype, qclass, ttl, buf);
+        buffer_free(buf);
+        on_answer(record);
+        dnsresourcerecord_free(record);
         return 0;
     }
 
@@ -143,31 +113,21 @@ static void named_enc_character_string(const uint8_t *in_data, int in_len, uint8
     *out_len = written;
 }
 
-static void named_on_evdns_request(struct evdns_server_request *req, void *data)
+static void named_on_request(DNSRequest *req, void *data)
 {
-    int ttl = 300;
+    uint32_t ttl = 300;
     LOG_DEBUG("rx request");
-
-    for (int i = 0; i < req->nquestions; i++) {
-        struct evdns_server_question *question = req->questions[i];
-        void on_answer(const char *name, const char *data, int data_len, int ttl, NamedQueryClass qclass, NamedQueryType qtype) {
-            LOG_DEBUG("answer name: %s, data: %s", name, data);
-
-            NAMED_EV_CHECK("add reply", evdns_server_request_add_reply(
-                req,
-                EVDNS_ANSWER_SECTION,
-                name,
-                (int)qtype,
-                (int)qclass,
-                ttl,
-                data_len, // data len
-                0,
-                data));
-        }
-        named_query_name_class_qtype(question->name, question->dns_question_class, question->type, on_answer);
+    DNSResponse *response = dnsresponse_new(req);
+    void on_answer(DNSResourceRecord *record) {
+        LOG_DEBUG("answer for name: %s", record->name);
+        list_append(response->message->answers, dnsresourcerecord_copy(record));
     }
-    NAMED_EV_CHECK("respond", evdns_server_request_respond(req, 0));
-
+    void on_question(List *a_list, void *ctx, void *item, bool *keep_going) {
+        DNSQuestion *question = (DNSQuestion *)item;
+        named_query(question->name, question->qclass, question->qtype, on_answer);
+    }
+    list_iterate(response->message->questions, on_question, NULL);
+    dnsresponse_finish(response);
     LOG_DEBUG("responded");
 }
 
@@ -188,6 +148,10 @@ static void drop_privileges(const char *pw_name)
             LOG_INFO("dropped gid to %d", pwd->pw_gid);
         }
     }
+}
+
+void named_handle_request(DNSRequest *request, void *ctx) {
+    LOG_DEBUG("named_handle_request");
 }
 
 int main(int argc, char **argv)
@@ -248,7 +212,7 @@ int main(int argc, char **argv)
     free(priv_user);
 
     //evdns_add_server_port_with_base(event_base, sock, 0, named_on_evdns_request, NULL);
-    DNSPort *udp_port = dnsport_new(event_base, sock, false, NULL, NULL);
+    DNSPort *udp_port = dnsport_new(event_base, sock, false, named_on_request, NULL);
 
     event_base_dispatch(event_base);
     sqlite3_close(named_db);
@@ -256,4 +220,3 @@ int main(int argc, char **argv)
     return 0;
 }
 
-#undef NAMED_EV_CHECK

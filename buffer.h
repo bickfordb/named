@@ -1,10 +1,7 @@
 #ifndef __BUFFER_H__
 #define __BUFFER_H__
 #include <stdlib.h>
-
-struct _buffer;
 typedef struct _Buffer Buffer;
-
 Buffer* buffer_new(void *data, size_t length);
 Buffer* buffer_copy(Buffer *);
 void buffer_free(Buffer *);
