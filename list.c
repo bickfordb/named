@@ -1,4 +1,6 @@
 #include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 #include "list.h"
 
 struct _ListItem;
@@ -72,3 +74,24 @@ int list_length(List *list) {
     return list->size;
 }
 
+char *list_repr(List *list, ListReprFunc repr_func) {
+    ListItem *i = list->head;
+    int idx = 0;
+    char *repr = NULL;
+    while (i != NULL) {
+        char *val_repr = repr_func(i->value);
+        if (repr == NULL)
+            asprintf(&repr, "[%s", val_repr);
+        else {
+            char *old_repr = repr;
+            asprintf(&repr, "%s, %s", repr, val_repr);
+            free(old_repr); 
+        }
+        free(val_repr);
+        i = i->next;
+    }
+    char *old_repr = repr;
+    asprintf(&repr, "%s]", repr);
+    free(old_repr);
+    return repr;
+}

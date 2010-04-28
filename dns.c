@@ -13,13 +13,17 @@
 
 #define IS_RETRYABLE(E) ((E) == EINTR || (E) == EAGAIN)
 const int DNS_MAX_UDP_PACKET_SIZE = 1500;
+static const int DNS_MAX_NAME_LENGTH = 256;
 
 struct _DNSMessage { 
     uint16_t id;
-    bool is_query : 1;
     int opcode; 
-    bool is_recursion_desired : 1;
-    bool is_recursion_available : 1;
+    int is_query_response : 1;
+    int is_recursion_desired : 1;
+    int is_truncated : 1;
+    int is_recursion_available : 1;
+    int is_authoritative_answer : 1;
+    uint8_t rcode;
     List *questions;
     List *answers;
     List *nameservers;
@@ -30,21 +34,25 @@ struct _DNSMessage {
 struct _DNSRequest {
    DNSMessage *message; 
    DNSPort *port; 
+   struct sockaddr *src_address;
+   socklen_t src_address_len;
 };
 
+typedef enum {
+    DNSGeneralFailureResult = -1,
+    DNSLabelTooLongResult = -2,
+    DNSExtraBodyResult = -3,
+    DNSBodyTooShortResult = -4,
+    DNSOkResult = 0
+} DNSResult;
 
-
-struct _DNSAnswer
+struct _DNSResourceRecord
 {
     char *name;
     DNSQueryClass qclass;
     DNSQueryType qtype;
-    int ttl;
-    union {
-        Buffer *txt;
-        uint32_t address4;
-        char *cname;
-    } data;
+    uint32_t ttl;
+    Buffer *data;
 };
 
 struct _DNSQuestion
@@ -53,7 +61,6 @@ struct _DNSQuestion
     DNSQueryClass qclass;
     DNSQueryType qtype;
 };
-
 
 struct _DNSPort
 { 
@@ -72,16 +79,216 @@ void dnsport_free(DNSPort *port);
 DNSMessage *dnsmessage_new();
 void dnsmessage_free(DNSMessage *message); 
 DNSRequest *dnsrequest_new();
+static DNSResult dnsmessage_parse_question(DNSMessage *msg, uint8_t **body, size_t *body_len);
+static DNSResult dnsmessage_parse_answer(DNSMessage *msg, uint8_t **body, size_t *body_len);
+static DNSResult dnsmessage_parse_additional(DNSMessage *msg, uint8_t **body, size_t *body_len);
+static DNSResult dnsmessage_parse_nameserver(DNSMessage *msg, uint8_t **body, size_t *body_len);
+static DNSResult dns_parse_label(uint8_t *label, size_t label_len, uint8_t **bytes, size_t *bytes_len);
+DNSQuestion *dnsquestion_new(const char *name, DNSQueryType qtype, DNSQueryClass qclass);
+
 
 void dnsport_flush(DNSPort *port) {
 
 }
 
+DNSResult dnsmessage_parse(DNSMessage *message, uint8_t *bytes, size_t bytes_len) {
+    // Read the header
+    uint8_t *pos = bytes;    
+    message->id = ntohs(*((uint16_t *)pos));
+    pos++;
+    pos++;
+
+    message->is_query_response = *pos & 1;
+    message->opcode = (*pos >> 1) & 0xf;
+    message->is_authoritative_answer = (*pos >> 5) & 1;
+    message->is_truncated = (*pos >> 6) & 1;
+    message->is_recursion_desired = (*pos >> 7) & 1;
+    pos++;
+    message->is_recursion_available = *pos & 1;
+    message->rcode = (*pos >> 4) & 0xf;
+    pos++;
+    uint16_t question_count = ntohs(*((uint16_t *)pos));
+    pos += 2;
+    uint16_t answer_count = ntohs(*((uint16_t *)pos));
+    pos += 2;
+    uint16_t nameserver_count = ntohs(*((uint16_t *)pos));
+    pos += 2;
+    uint16_t additional_count = ntohs(*((uint16_t *)pos));
+    pos += 2;
+    uint8_t *body = pos;
+    size_t body_len = bytes_len - (body - bytes);
+    LOG_DEBUG("parse body (%d)", (int)body_len);
+    DNSResult status = DNSOkResult;
+    #define DNS_RUN_PARSER(P) { status = P; if (status != DNSOkResult) return status;} 
+    for (int i = 0; i < question_count; i++) {
+        LOG_DEBUG("parse question")
+        DNS_RUN_PARSER(dnsmessage_parse_question(message, &body, &body_len));
+    }
+    LOG_DEBUG("parsed questions")
+
+    for (int i = 0; i < answer_count; i++) {
+        DNS_RUN_PARSER(dnsmessage_parse_answer(message, &body, &body_len));
+    }
+    for (int i = 0; i < nameserver_count; i++) {
+        DNS_RUN_PARSER(dnsmessage_parse_nameserver(message, &body, &body_len));
+    }
+    for (int i = 0; i < additional_count; i++) {
+        DNS_RUN_PARSER(dnsmessage_parse_additional(message, &body, &body_len));
+    }
+    #undef DNS_RUN_PARSER
+    if (body_len > 0)
+        return DNSExtraBodyResult;
+    LOG_DEBUG("done parsing message");
+    return DNSOkResult;
+}
+
+static DNSResult dns_parse_label(uint8_t *label, size_t label_len, uint8_t **bytes, size_t *bytes_len) {
+    __label__ label_too_long;
+    __label__ body_too_short;
+    LOG_DEBUG("parse label (%d)", (int)*bytes_len);
+    if (label == NULL)
+        return DNSGeneralFailureResult;
+    size_t label_idx = 0;
+    uint8_t pop() {
+        if (*bytes_len == 0) 
+            goto body_too_short;
+        char c = **bytes;
+        *bytes = *bytes + 1;
+        *bytes_len = *bytes_len - 1;
+        return c;
+    }
+    void push(uint8_t c) {
+        if (label_idx >= (label_len - 1))
+            goto label_too_long;
+        label[label_idx++] = c;
+        label[label_idx] = 0;
+    }
+    uint8_t length = pop();
+    while (length > 0) {
+        while (length > 0) {
+            push(pop());
+            length--;
+        }
+        length = pop();
+        push('.');
+    }
+    return DNSOkResult;
+body_too_short:
+    return DNSBodyTooShortResult;
+label_too_long:
+    return DNSLabelTooLongResult;
+}
+
+static DNSResult dnsresourcerecord_parse(DNSResourceRecord **record, uint8_t **body, size_t *body_len) {
+    char *label = calloc(DNS_MAX_NAME_LENGTH, 1);
+    if (label == NULL)
+        return DNSGeneralFailureResult;
+    dns_parse_label(label, DNS_MAX_NAME_LENGTH, body, body_len);
+    *body = *body + 4;
+    free(label);
+    return DNSOkResult;
+}
+
+static DNSResult dnsmessage_parse_answer(DNSMessage *msg, uint8_t **body, size_t *body_len) {
+    DNSResourceRecord *record = NULL;
+    DNSResult result = dnsresourcerecord_parse(&record, body, body_len);
+    if (result != DNSOkResult) 
+        return result;
+    if (record != NULL)
+        list_append(msg->answers, record);
+    return DNSOkResult;
+}
+
+static DNSResult dnsmessage_parse_additional(DNSMessage *msg, uint8_t **body, size_t *body_len) {
+    DNSResourceRecord *record = NULL;
+    DNSResult result = dnsresourcerecord_parse(&record, body, body_len);
+    if (result != DNSOkResult) 
+        return result;
+    if (record != NULL)
+        list_append(msg->additional, record);
+    return DNSOkResult;
+}
+
+static DNSResult dnsmessage_parse_nameserver(DNSMessage *msg, uint8_t **body, size_t *body_len) {
+    DNSResourceRecord *record = NULL;
+    DNSResult result = dnsresourcerecord_parse(&record, body, body_len);
+    if (result != DNSOkResult) 
+        return result;
+    if (record != NULL)
+        list_append(msg->nameservers, record);
+    return DNSOkResult;
+}
+
+static DNSResult dnsmessage_parse_question(DNSMessage *msg, uint8_t **body, size_t *body_len) {
+    DNSQueryType qtype;
+    DNSQueryClass qclass;
+    size_t consumed = 0; 
+    char *label = calloc(DNS_MAX_NAME_LENGTH, 1);
+    if (label == NULL)
+        return DNSGeneralFailureResult;
+    DNSResult status = dns_parse_label(label, DNS_MAX_NAME_LENGTH, body, body_len);
+    if (status != DNSOkResult)
+        return status;
+    qtype = ntohs(**((uint16_t **)body));
+    *body = *body + 2;
+    *body_len = *body_len - 2;
+    qclass = ntohs(**((uint16_t **)body));
+    *body = *body + 2;
+    *body_len = *body_len - 2;
+    list_append(msg->questions, dnsquestion_new(label, qtype, qclass));
+    free(label);
+    return DNSOkResult;
+}
+
+void dnsport_handle_request(DNSPort *port, DNSRequest *request) {
+    char *repr = dnsrequest_repr(request);
+    if (repr == NULL)
+        return;
+    LOG_DEBUG("handle request: %s", repr);
+    free(repr);
+}
+
+char *dnsrequest_repr(DNSRequest *request) {
+    char *message_repr = dnsmessage_repr(request->message);
+    if (message_repr == NULL)
+        return NULL;
+    char *repr = NULL;
+    asprintf(&repr, "{message:%s}", message_repr);
+    free(message_repr);
+    return repr;
+}
+
+char *dnsmessage_repr(DNSMessage *message) {
+    char *questions_repr = list_repr(message->questions, (ListReprFunc)dnsquestion_repr);
+    char *repr = NULL;
+    int succ = asprintf(&repr, "{questions:%s}", questions_repr);
+    if (succ >= 0 && questions_repr != NULL)
+        free(questions_repr);
+    return repr;
+}
+
+char *dnsquestion_repr(DNSQuestion *question) {
+    char *repr = NULL;
+    asprintf(&repr, "{name:\"%s\", qclass:%d, qtype:%d}", question->name, (int)question->qclass, (int)question->qtype);
+    return repr;
+}
+
 void dnsport_handle_request_bytes(DNSPort *port, uint8_t *bytes, ssize_t bytes_len, struct sockaddr *addr, socklen_t addr_len) 
 {
+    const int header_size = 12;
+    if (bytes_len < header_size)
+        return;
     DNSRequest *request = dnsrequest_new();
-    
-
+    // Copy the port and address information
+    request->port = port;
+    request->src_address = malloc(addr_len);
+    memcpy(request->src_address, addr, addr_len); 
+    request->src_address_len = addr_len;
+    int status = dnsmessage_parse(request->message, bytes, bytes_len);
+    if (status == DNSOkResult)
+        dnsport_handle_request(port, request);
+    else
+        LOG_ERROR("failed to parse message: %d", status);
 }
 
 void dnsport_read(DNSPort *port) {
@@ -145,6 +352,8 @@ void dnsport_free(DNSPort *port) {
 
 DNSQuestion *dnsquestion_new(const char *name, DNSQueryType qtype, DNSQueryClass qclass)
 {
+    if (name == NULL)
+        return NULL;
     DNSQuestion *question = calloc(1, sizeof(DNSQuestion));
     size_t name_size = strlen(name);
     question->name = malloc(name_size + 1);
@@ -161,11 +370,11 @@ void dnsquestion_free(DNSQuestion *question)
     free(question);
 }
 
-DNSAnswer *dnsanswer_new(const char *name, DNSQueryType qtype, DNSQueryClass qclass, int ttl, uint32_t address4, const char *cname, Buffer *txt)
+DNSResourceRecord *dnsresourcerecord_new(const char *name, DNSQueryType qtype, DNSQueryClass qclass, int ttl, Buffer *data)
 {
     size_t name_len = strlen(name);
 
-    DNSAnswer *answer = calloc(1, sizeof(DNSAnswer));
+    DNSResourceRecord *answer = calloc(1, sizeof(DNSResourceRecord));
     if (name_len > 0) {
         answer->name = malloc(name_len + 1);
         memcpy(answer->name, name, name_len);
@@ -173,40 +382,16 @@ DNSAnswer *dnsanswer_new(const char *name, DNSQueryType qtype, DNSQueryClass qcl
     answer->qclass = qclass;
     answer->qtype = qtype;
     answer->ttl = ttl;
-    switch (qtype) {
-        case DNSTxtQueryType:
-            answer->data.txt = buffer_copy(txt);
-            break;
-        case DNSCanonicalQueryType:    
-            if (cname != NULL) {
-                answer->data.cname = calloc(strlen(cname) + 1, 1);
-                memcpy(answer->data.cname, cname, strlen(cname));
-            } else {
-                answer->data.cname = NULL;
-            }
-            break;
-        case DNSHostQueryType:
-            answer->data.address4 = address4;
-            break;
-        default:
-            LOG_ERROR("unhandled query type");
-    }
+    answer->data = buffer_copy(data);
     return answer;
 }
 
-void dnsanswer_free(DNSAnswer *answer)
+void dnsresourcerecord_free(DNSResourceRecord *answer)
 {
     if (answer->name != NULL)
         free(answer->name);
-    switch(answer->qtype) {
-        case DNSTxtQueryType:
-            buffer_free(answer->data.txt);
-            break;
-        case DNSCanonicalQueryType:
-            if (answer->data.cname != NULL)  
-                free(answer->data.cname);
-            break;
-    }
+    if (answer->data != NULL)
+        buffer_free(answer->data);
     free(answer);
 }
 
@@ -238,9 +423,9 @@ void dnsrequest_free(DNSRequest *request) {
 }
 
 void dnsmessage_free(DNSMessage *message) { 
-    list_free(message->answers, (ListFreeItemFunc)dnsanswer_free);
-    list_free(message->additional, (ListFreeItemFunc)dnsanswer_free);
-    list_free(message->nameservers, (ListFreeItemFunc)dnsanswer_free);
+    list_free(message->answers, (ListFreeItemFunc)dnsresourcerecord_free);
+    list_free(message->additional, (ListFreeItemFunc)dnsresourcerecord_free);
+    list_free(message->nameservers, (ListFreeItemFunc)dnsresourcerecord_free);
     list_free(message->questions, (ListFreeItemFunc)dnsquestion_free);
     free(message);
 }
@@ -256,4 +441,3 @@ DNSMessage *dnsmessage_new() {
     msg->nameservers = list_new();
     msg->questions = list_new();
 }
-

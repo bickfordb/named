@@ -8,6 +8,7 @@ CFLAGS += $$(pkg-config --cflags --libs sqlite3)
 ifeq ($(shell uname), Darwin)
 	CFLAGS += -fnested-functions
 endif
+CFLAGS += -ggdb
 
 all: bin/named
 
@@ -29,3 +30,7 @@ test.db: init.sql fixture.sql
 	sqlite3 test.db <drop.sql
 	sqlite3 test.db <init.sql
 	sqlite3 test.db <fixture.sql
+
+debug: bin/named test.db
+	gdb -x gdbinit
+

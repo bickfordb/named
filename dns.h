@@ -5,19 +5,20 @@
 
 #include "list.h"
 
-struct _DNSRequest;
 struct _DNSBase;
-struct _DNSAnswer;
-struct _DNSQuestion;
-struct _DNSPort;
 struct _DNSMessage;
-typedef struct _DNSBase DNSBase;
-typedef struct _DNSRequest DNSRequest;
-typedef struct _DNSResponse DNSResponse;
+struct _DNSPort;
+struct _DNSQuestion;
+struct _DNSRequest;
+struct _DNSResourceRecord;
 typedef struct _DNSAnswer DNSAnswer;
-typedef struct _DNSQuestion DNSQuestion;
-typedef struct _DNSPort DNSPort;
+typedef struct _DNSBase DNSBase;
 typedef struct _DNSMessage DNSMessage;
+typedef struct _DNSPort DNSPort;
+typedef struct _DNSQuestion DNSQuestion;
+typedef struct _DNSRequest DNSRequest;
+typedef struct _DNSResourceRecord DNSResourceRecord;
+typedef struct _DNSResponse DNSResponse;
 
 /* Records whose type is <= 16 are described in RFC 1035 */
 typedef enum {
@@ -43,6 +44,9 @@ DNSPort *dnsport_new(struct event_base *event_base, int socket, bool is_tcp, OnD
 DNSMessage *dnsrequest_message(DNSRequest *);
 List *dnsmessage_answers(DNSMessage *);
 List *dnsmessage_questions(DNSMessage *);
+char *dnsrequest_repr(DNSRequest *request);
+char *dnsmessage_repr(DNSMessage *message);
+char *dnsquestion_repr(DNSQuestion *question);
 
 #endif // __DNS_H__
 
