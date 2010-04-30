@@ -58,7 +58,6 @@ struct _DNSRequest
    DNSPort *port;
    struct sockaddr *src_address;
    socklen_t src_address_len;
-
 };
 
 typedef enum
@@ -86,11 +85,12 @@ struct _DNSQuestion
     DNSQueryClass qclass;
 };
 
-
 struct _DNSResponse
 {
     DNSRequest *request;
     DNSMessage *message;
+    Buffer *response_buffer;
+    size_t sent_counter;
 };
 
 DNSPort *dnsport_new(struct event_base *event_base, int socket, bool is_tcp, OnDNSRequest on_dns_request, void *on_dns_request_context);
@@ -107,7 +107,6 @@ void dnsrequest_free(DNSRequest *request);
 DNSMessage *dnsresponse_message(DNSResponse *response);
 void dnsresponse_finish(DNSResponse *response);
 DNSResourceRecord *dnsresourcerecord_copy(DNSResourceRecord *other);
-
+Buffer *dnsmessage_encode(DNSMessage*);
 
 #endif // __DNS_H__
-

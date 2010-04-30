@@ -33,7 +33,6 @@ typedef void (*NamedAnswerFunc)(DNSResourceRecord *record);
 
 static void named_query(const char *name, DNSQueryClass qclass, DNSQueryType qtype, NamedAnswerFunc);
 static void named_on_request(DNSRequest *req, void *data);
-static void named_enc_character_string(const uint8_t *in_data, int in_len, uint8_t *out_data, int *out_len, uint8_t max_chunk_size);
 
 static const int NAMED_TTL = 300;
 static sqlite3 *named_db = NULL;
@@ -96,30 +95,13 @@ static void named_query(const char *name, DNSQueryClass qclass, DNSQueryType qty
     }
 }
 
-static void named_enc_character_string(const uint8_t *in_data, int in_len, uint8_t *out_data, int *out_len, uint8_t max_chunk_size)
-{
-    int remaining = in_len;
-    int written = 0;
-    for (int i = 0; i < in_len && written < *out_len; i++) {
-        if ((i % max_chunk_size) == 0) {
-            int remaining = in_len - written;
-            int chunk_size = max_chunk_size < remaining ? max_chunk_size : remaining;
-            out_data[written] = (uint8_t)chunk_size;
-            written++;
-        }
-        out_data[written] = in_data[i];
-        written++;
-    }
-    *out_len = written;
-}
-
 static void named_on_request(DNSRequest *req, void *data)
 {
     uint32_t ttl = 300;
     LOG_DEBUG("rx request");
     DNSResponse *response = dnsresponse_new(req);
     void on_answer(DNSResourceRecord *record) {
-        LOG_DEBUG("answer for name: %s", record->name);
+        LOG_DEBUG("answer for name: %s, %d, %s", record->name, (int)record->qtype, (char *)buffer_data(record->data));
         list_append(response->message->answers, dnsresourcerecord_copy(record));
     }
     void on_question(List *a_list, void *ctx, void *item, bool *keep_going) {

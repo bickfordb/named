@@ -47,12 +47,9 @@ void list_prepend(List *list, void *item) {
     list->size++;
 }
 
-
 void list_free(List *list, ListFreeItemFunc free_func) {
     ListItem *i = list->head; 
-    for (;;) {
-        if (i == NULL)
-            break;
+    while (i != NULL) {
         free_func(i->value);
         ListItem *last = i;
         i = i->next;
@@ -95,7 +92,6 @@ char *list_repr(List *list, ListReprFunc repr_func) {
     free(old_repr);
     return repr;
 }
-
 
 List *list_copy(List *other, ListCopyFunc copy_func) {
     List *list = list_new();

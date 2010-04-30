@@ -23,7 +23,7 @@
 -- 1 - internets
 -- 255 -- all
 
-delete from responses where name = 'foo' or name = 'foo.com';
-insert into responses (name, qclass, qtype, ttl, data) values ('foo', 1, 16, 300, 'hey');
-insert into responses (name, qclass, qtype, ttl, data) values ('foo.com', 1, 16, 300, 'hey foo.com');
+delete from responses where name = 'foo.' or name = 'foo.com.';
+insert into responses (name, qclass, qtype, ttl, data) values ('foo.', 1, 16, 300, 'hey');
+insert into responses (name, qclass, qtype, ttl, data) values ('foo.com.', 1, 16, 300, 'hey foo.com');
  

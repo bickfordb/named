@@ -15,8 +15,8 @@ all: bin/named
 bin:
 	install -d bin
 
-bin/named: named.c list.c list.h dns.c dns.h log.h log.c buffer.h buffer.c util.c bin
-	$(CC) $(CFLAGS) -o $@ named.c list.c dns.c log.c buffer.c util.c
+bin/named: named.c list.c list.h dns.c dns.h log.h log.c buffer.h buffer.c util.c rope.c rope.h bin
+	$(CC) $(CFLAGS) -o $@ named.c list.c dns.c log.c buffer.c util.c rope.c
 
 clean-named:
 	- rm -rf bin/named
@@ -24,6 +24,7 @@ clean-named:
 clean: clean-named
 
 test: bin/named test.db
+	#MallocGuardEdges=1 MallocCheckHeapStart=1 MallocCheckHeapEach=1 bin/named -d test.db
 	bin/named -d test.db
 
 test.db: init.sql fixture.sql

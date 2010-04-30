@@ -11,10 +11,12 @@
 #include "list.h"
 #include "log.h"
 #include "util.h"
+#include "rope.h"
 
 #define IS_RETRYABLE(E) ((E) == EINTR || (E) == EAGAIN)
 const int DNS_MAX_UDP_PACKET_SIZE = 1500;
 static const int DNS_MAX_NAME_LENGTH = 256;
+static const int DNS_HEADER_LENGTH = 12;
 
 struct _DNSPort
 {
@@ -44,6 +46,7 @@ DNSQuestion *dnsquestion_copy(DNSQuestion *other);
 DNSRequest *dnsrequest_new(DNSPort *port, struct sockaddr *src_address, socklen_t src_address_len, DNSMessage *message);
 DNSMessage *dnsmessage_copy(DNSMessage *other);
 void dnsresponse_free(DNSResponse *response);
+void *dns_encode_label(char *name, Rope *r);
 
 void dnsport_flush(DNSPort *port) {
 
@@ -335,13 +338,8 @@ void dnsquestion_free(DNSQuestion *question)
 
 DNSResourceRecord *dnsresourcerecord_new(const char *name, DNSQueryType qtype, DNSQueryClass qclass, int ttl, Buffer *data)
 {
-    size_t name_len = strlen(name);
-
     DNSResourceRecord *answer = calloc(1, sizeof(DNSResourceRecord));
-    if (name_len > 0) {
-        answer->name = malloc(name_len + 1);
-        memcpy(answer->name, name, name_len);
-    }
+    answer->name = string_copy(name);
     answer->qclass = qclass;
     answer->qtype = qtype;
     answer->ttl = ttl;
@@ -381,12 +379,150 @@ DNSRequest *dnsrequest_new(DNSPort *port, struct sockaddr *src_address, socklen_
 
 void dnsresponse_finish(DNSResponse *response) {
     // do network sending things here!
+    LOG_DEBUG("finishing response");
+    if (response->response_buffer == NULL) {
+        LOG_DEBUG("encoding response");
+        response->response_buffer = dnsmessage_encode(response->message);
+    }
+    void *buf = buffer_data(response->response_buffer) + response->sent_counter;
+    size_t size = buffer_length(response->response_buffer) - response->sent_counter;
+    LOG_DEBUG("sending response (%d)", (int)size);
+    ssize_t sent = sendto(response->request->port->socket, buf, size, 0, response->request->src_address, response->request->src_address_len); 
+    if (sent != size) {
+        LOG_ERROR("left over response!");
+    }
+    LOG_DEBUG("freeing response");
     dnsresponse_free(response);
+    LOG_DEBUG("response freed");
+
+}
+
+void dnsmessage_encode_header(DNSMessage *message, Rope *stringbuf) {
+    LOG_DEBUG("encoding header");
+    uint8_t bytes[DNS_HEADER_LENGTH];
+    memset(bytes, 0, DNS_HEADER_LENGTH);
+    uint8_t *pos = bytes;
+    *((uint16_t *)pos) = htons(message->id);
+    pos += 2;
+    *pos = *pos | (htons(message->opcode) << 1);
+    *pos = *pos | (message->is_authoritative_answer << 5);
+    *pos = *pos | (message->is_truncated << 6);
+    *pos = *pos | (message->is_recursion_desired << 7);
+    pos++;
+    *pos = *pos | (1 & message->is_recursion_available);
+    *pos = *pos | ((message->rcode & 0xf) << 4);
+    pos++;
+    *((uint16_t *)pos) = htons(list_length(message->questions));
+    pos += 2;
+    *((uint16_t *)pos) = htons(list_length(message->answers));
+    pos += 2;
+    *((uint16_t *)pos) = htons(list_length(message->nameservers));
+    pos += 2;
+    *((uint16_t *)pos) = htons(list_length(message->additional));
+    rope_append_bytes(stringbuf, bytes, DNS_HEADER_LENGTH);
+    LOG_DEBUG("encoded header");
+}
+
+void dnsquestion_encode(DNSQuestion *question, Rope *string_buf)
+{ 
+    dns_encode_label(question->name, string_buf);
+    uint16_t dubbabytes[2];
+    dubbabytes[0] = question->qtype;
+    dubbabytes[1] = question->qclass;
+    rope_append_bytes(string_buf, (uint8_t *)dubbabytes, 4);
+}
+
+void *dns_encode_label(char *name, Rope *r) {
+    uint8_t buf[128];
+    int i = 0;
+    for (;;) {
+       char *next_dot = strchr(name, '.');
+       if (next_dot == NULL)
+           next_dot = strchr(name, 0);
+       buf[i++] = (uint8_t)(next_dot - name);
+       while (*name != '.' && *name != 0) {
+            buf[i++] = *name;
+            name++;
+       }
+       if (*name == 0 || *next_dot == 0)
+           break;
+       name++;
+    }
+    buf[i++] = 0;
+    rope_append_bytes(r, buf, i);
+}
+
+void dnsresourcerecord_encode(DNSResourceRecord *rr, Rope *string_buf)
+{
+    dns_encode_label(rr->name, string_buf);
+    uint16_t type_and_class[2];
+    type_and_class[0] = htons(rr->qtype);
+    type_and_class[1] = htons(rr->qclass);
+    rope_append_bytes(string_buf, (uint8_t *)type_and_class, sizeof(type_and_class));
+    switch (rr->qtype) {
+    case DNSTxtQueryType:
+        {
+            size_t remaining = buffer_length(rr->data);
+            size_t offset = 0;
+            Rope *r = rope_new();
+            while (remaining > 0) {
+                const uint8_t max_chunk_size = 254;
+                uint8_t chunk_size = remaining < max_chunk_size ? remaining : max_chunk_size;
+                uint8_t chunk[chunk_size + 1];
+                chunk[0] = chunk_size;
+                memcpy(chunk + 1, buffer_data(rr->data) + offset, sizeof(chunk) - 1);
+                offset += chunk_size;
+                remaining -= chunk_size;
+                rope_append_bytes(r, chunk, sizeof(chunk));
+            }
+            Buffer *b = rope_flatten(r);
+            uint16_t size = htons(buffer_length(b));
+            rope_append_bytes(string_buf, (const void *)&size, 2);
+            rope_append_buffer(string_buf, b);
+            buffer_free(b);
+            break;
+        }
+    default:
+        {
+            LOG_DEBUG("unknown resource record type");
+            uint16_t size = buffer_length(rr->data);
+            rope_append_bytes(string_buf, (uint8_t *)&size, 2); 
+            rope_append_buffer(string_buf, rr->data);
+            break;
+        }
+    }
+}
+
+Buffer *dnsmessage_encode(DNSMessage *message)
+{
+    Rope *string_buf = rope_new();
+    dnsmessage_encode_header(message, string_buf);
+   
+    void enc_question(List *l, void *ctx, void *item, bool *keep_going) {
+        DNSQuestion *question = (DNSQuestion *)item;
+        dnsquestion_encode(question, string_buf);
+    }
+    void enc_rr(List *l, void *ctx, void *item, bool *keep_going) {
+        DNSResourceRecord *record = (DNSResourceRecord *)item;
+        dnsresourcerecord_encode(record, string_buf);
+    }
+    LOG_DEBUG("encoding questions");
+    list_iterate(message->questions, (ListIterateFunc)enc_question, NULL);
+    LOG_DEBUG("encoding answers");
+    list_iterate(message->answers, (ListIterateFunc)enc_rr, NULL);
+    LOG_DEBUG("encoding nameservers");
+    list_iterate(message->nameservers, (ListIterateFunc)enc_rr, NULL);
+    LOG_DEBUG("encoding additional");
+    list_iterate(message->additional, (ListIterateFunc)enc_rr, NULL);
+    LOG_DEBUG("flattening");
+    return rope_flatten(string_buf);
 }
 
 void dnsresponse_free(DNSResponse *response) {
     dnsrequest_free(response->request);
     dnsmessage_free(response->message);
+    if (response->response_buffer != NULL)
+        buffer_free(response->response_buffer);
     free(response);
 }
 
@@ -398,6 +534,7 @@ int dnsrequest_add_question(DNSRequest *request, const char *name, DNSQueryType
 }
 
 void dnsrequest_free(DNSRequest *request) {
+    free(request->src_address);
     dnsmessage_free(request->message);
     free(request);
 }
@@ -427,14 +564,15 @@ DNSMessage *dnsmessage_copy(DNSMessage *other) {
     msg->answers = list_copy(other->answers, (ListCopyFunc)dnsresourcerecord_copy);
     msg->additional = list_copy(other->additional, (ListCopyFunc)dnsresourcerecord_copy);
     msg->nameservers = list_copy(other->nameservers, (ListCopyFunc)dnsresourcerecord_copy);
-    msg->questions = list_copy(other->answers, (ListCopyFunc)dnsquestion_copy);
+    msg->questions = list_copy(other->questions, (ListCopyFunc)dnsquestion_copy);
     return msg;
 }
 
 DNSResponse *dnsresponse_new(DNSRequest *request) {
     DNSResponse *response = calloc(sizeof(DNSResponse), 1);
     response->request = dnsrequest_new(request->port, request->src_address, request->src_address_len, request->message);
-    response->message = dnsmessage_copy(request->message);
+    response->message = dnsmessage_copy(response->request->message);
+    response->message->is_query_response = 1;
     return response;
 }
 
