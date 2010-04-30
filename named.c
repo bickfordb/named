@@ -59,7 +59,7 @@ static void named_query(const char *name, DNSQueryClass qclass, DNSQueryType qty
 
     int query_name_response(void *ctx, int col_count, char **data, char **column_names) {
         const char *response_data = "";
-        const char *response_name = "";
+        const char *qname = "";
         DNSQueryClass qclass = DNSInternetQueryClass;
         DNSQueryType qtype = DNSTxtQueryType;
         uint32_t ttl = NAMED_TTL;
@@ -70,17 +70,17 @@ static void named_query(const char *name, DNSQueryClass qclass, DNSQueryType qty
             if (val == NULL)
                 continue;
             if (strcmp(col, NAMED_COL_DATA) == 0) {
-                buf = buffer_new((uint8_t *)val, strlen(val) + 1);
+                buf = buffer_new((uint8_t *)val, strlen(val));
             } else if (strcmp(col, NAMED_COL_TTL) == 0)
                 ttl = atoi(val);
             else if (strcmp(col, NAMED_COL_NAME) == 0)
-                name = val;
+                qname = val;
             else if (strcmp(col, NAMED_COL_QCLASS) == 0)
                 qclass = atoi(val);
             else if (strcmp(col, NAMED_COL_QTYPE) == 0)
                 qtype = atoi(val);
         }
-        DNSResourceRecord *record = dnsresourcerecord_new(name, qtype, qclass, ttl, buf);
+        DNSResourceRecord *record = dnsresourcerecord_new(qname, qtype, qclass, ttl, buf);
         buffer_free(buf);
         on_answer(record);
         dnsresourcerecord_free(record);

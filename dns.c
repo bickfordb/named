@@ -46,7 +46,7 @@ DNSQuestion *dnsquestion_copy(DNSQuestion *other);
 DNSRequest *dnsrequest_new(DNSPort *port, struct sockaddr *src_address, socklen_t src_address_len, DNSMessage *message);
 DNSMessage *dnsmessage_copy(DNSMessage *other);
 void dnsresponse_free(DNSResponse *response);
-void *dns_encode_label(char *name, Rope *r);
+Buffer *dns_encode_label(char *name);
 
 void dnsport_flush(DNSPort *port) {
 
@@ -107,6 +107,8 @@ static DNSResult dns_parse_label(uint8_t *label, size_t label_len, uint8_t **byt
     __label__ label_too_long;
     __label__ body_too_short;
     LOG_DEBUG("parse label (%d)", (int)*bytes_len);
+    
+
     if (label == NULL)
         return DNSGeneralFailureResult;
     size_t label_idx = 0;
@@ -133,6 +135,7 @@ static DNSResult dns_parse_label(uint8_t *label, size_t label_len, uint8_t **byt
         length = pop();
         push('.');
     }
+    push('\0');
     return DNSOkResult;
 body_too_short:
     return DNSBodyTooShortResult;
@@ -321,9 +324,7 @@ DNSQuestion *dnsquestion_new(const char *name, DNSQueryType qtype, DNSQueryClass
     if (name == NULL)
         return NULL;
     DNSQuestion *question = calloc(1, sizeof(DNSQuestion));
-    size_t name_size = strlen(name);
-    question->name = malloc(name_size + 1);
-    memcpy(question->name, name, name_size);
+    question->name = string_copy(name);
     question->qtype = qtype;
     question->qclass = qclass;
     return question;
@@ -394,7 +395,6 @@ void dnsresponse_finish(DNSResponse *response) {
     LOG_DEBUG("freeing response");
     dnsresponse_free(response);
     LOG_DEBUG("response freed");
-
 }
 
 void dnsmessage_encode_header(DNSMessage *message, Rope *stringbuf) {
@@ -404,6 +404,7 @@ void dnsmessage_encode_header(DNSMessage *message, Rope *stringbuf) {
     uint8_t *pos = bytes;
     *((uint16_t *)pos) = htons(message->id);
     pos += 2;
+    *pos = *pos | (message->is_query_response & 1);
     *pos = *pos | (htons(message->opcode) << 1);
     *pos = *pos | (message->is_authoritative_answer << 5);
     *pos = *pos | (message->is_truncated << 6);
@@ -425,40 +426,60 @@ void dnsmessage_encode_header(DNSMessage *message, Rope *stringbuf) {
 
 void dnsquestion_encode(DNSQuestion *question, Rope *string_buf)
 { 
-    dns_encode_label(question->name, string_buf);
+    Buffer *label_buf = dns_encode_label(question->name);
+    rope_append_buffer(string_buf, label_buf);
+    buffer_free(label_buf);
     uint16_t dubbabytes[2];
-    dubbabytes[0] = question->qtype;
-    dubbabytes[1] = question->qclass;
+    dubbabytes[0] = htons(question->qtype);
+    dubbabytes[1] = htons(question->qclass);
     rope_append_bytes(string_buf, (uint8_t *)dubbabytes, 4);
 }
 
-void *dns_encode_label(char *name, Rope *r) {
-    uint8_t buf[128];
-    int i = 0;
-    for (;;) {
-       char *next_dot = strchr(name, '.');
-       if (next_dot == NULL)
-           next_dot = strchr(name, 0);
-       buf[i++] = (uint8_t)(next_dot - name);
-       while (*name != '.' && *name != 0) {
-            buf[i++] = *name;
-            name++;
-       }
-       if (*name == 0 || *next_dot == 0)
-           break;
-       name++;
+/* Encode a name into a label.
+ *
+ * A label is sequence of up to 256 byte frames.  Each frame consists of a
+ * length prefix byte N followed by N characters, eventually followed by a 0
+ * byte.
+ *
+ * For example 'hi.there.com' is encoded as [2 'h' 'i' 5 't' h' 'e' 'r' 'e' 3
+ * 'c' 'o' 'm' 0]
+ */ 
+Buffer *dns_encode_label(char *name) {
+    LOG_DEBUG("encode label");
+    size_t n = strlen(name);
+    while ((n > 0) && (name[n - 1] == '.'))
+        n--;
+    LOG_DEBUG("encode label: %s, %d", name, (int)n);
+    uint8_t buf[n + 2];
+    memset(buf, 0, sizeof(buf));
+    memcpy(buf + 1, name, n);
+    uint8_t *p = buf + n;
+    buf[n + 1] = 0;
+    while (p >= buf) {
+        uint8_t chunk_size = 0;
+        while ((p > buf) && (*p != '.')) {
+            chunk_size++;
+            p--;
+        }
+        LOG_DEBUG("chunk size: %d", (int)chunk_size);
+        if (chunk_size != 0)
+            *p = chunk_size;
+        p--;
     }
-    buf[i++] = 0;
-    rope_append_bytes(r, buf, i);
+    return buffer_new(buf, sizeof(buf));
 }
 
 void dnsresourcerecord_encode(DNSResourceRecord *rr, Rope *string_buf)
 {
-    dns_encode_label(rr->name, string_buf);
-    uint16_t type_and_class[2];
-    type_and_class[0] = htons(rr->qtype);
-    type_and_class[1] = htons(rr->qclass);
-    rope_append_bytes(string_buf, (uint8_t *)type_and_class, sizeof(type_and_class));
+    Buffer *label_buf = dns_encode_label(rr->name);
+    rope_append_buffer(string_buf, label_buf);
+    buffer_free(label_buf);
+    uint16_t qtype = htons(rr->qtype);
+    uint16_t qclass = htons(rr->qclass);
+    int32_t ttl = 0;
+    rope_append_bytes(string_buf, (void *)&qtype, sizeof(qtype));
+    rope_append_bytes(string_buf, (void *)&qclass, sizeof(qclass));
+    rope_append_bytes(string_buf, (void *)&ttl, sizeof(ttl));
     switch (rr->qtype) {
     case DNSTxtQueryType:
         {
@@ -466,11 +487,12 @@ void dnsresourcerecord_encode(DNSResourceRecord *rr, Rope *string_buf)
             size_t offset = 0;
             Rope *r = rope_new();
             while (remaining > 0) {
-                const uint8_t max_chunk_size = 254;
+                const uint8_t max_chunk_size = 255;
                 uint8_t chunk_size = remaining < max_chunk_size ? remaining : max_chunk_size;
                 uint8_t chunk[chunk_size + 1];
+                // The first byte is the chunk size
                 chunk[0] = chunk_size;
-                memcpy(chunk + 1, buffer_data(rr->data) + offset, sizeof(chunk) - 1);
+                memcpy(&chunk[1], buffer_data(rr->data) + offset, sizeof(chunk) - 1);
                 offset += chunk_size;
                 remaining -= chunk_size;
                 rope_append_bytes(r, chunk, sizeof(chunk));
