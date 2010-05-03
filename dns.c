@@ -525,7 +525,6 @@ void dnsresponse_finish(DNSResponse *response) {
         dnsresponse_finish_tcp(response);
     else
         dnsresponse_finish_udp(response);
-
 }
 
 void dnsmessage_encode_header(DNSMessage *message, Rope *stringbuf) {
