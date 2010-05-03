@@ -10,8 +10,6 @@
 #include <arpa/inet.h>
 
 #include <event2/event.h>
-#include <event2/dns.h>
-#include <event2/dns_struct.h>
 #include <event2/util.h>
 
 #ifdef _EVENT_HAVE_NETINET_IN6_H
@@ -140,10 +138,11 @@ int main(int argc, char **argv)
 {
     LOG_INFO("startup")
     struct event_base *event_base = NULL;
-    struct evdns_base *evdns_base = NULL;
-    struct sockaddr_in my_addr;
+    struct sockaddr_in udp_addr;
+    struct sockaddr_in tcp_addr;
     int rc;
-    int sock;
+    int udp_sock;
+    int tcp_sock;
     int port = 10053;
 
     char *priv_user = calloc(1024, sizeof(char));
@@ -172,29 +171,43 @@ int main(int argc, char **argv)
         exit(1);
     }
     event_base = event_base_new();
-    evdns_base = evdns_base_new(event_base, 0);
-    evdns_set_log_fn(named_logger);
 
-    sock = socket(PF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) {
+    udp_sock = socket(PF_INET, SOCK_DGRAM, 0);
+    tcp_sock = socket(PF_INET, SOCK_STREAM, 0);
+    if (udp_sock < 0) {
         perror("socket");
         exit(1);
     }
-    evutil_make_socket_nonblocking(sock);
-    my_addr.sin_family = AF_INET;
-    my_addr.sin_port = htons(port);
-    my_addr.sin_addr.s_addr = INADDR_ANY;
-    if (bind(sock, (struct sockaddr*) &my_addr, sizeof(my_addr)) < 0) {
-        perror("bind");
+    if (tcp_sock < 0) {
+        perror("socket");
+        exit(1);
+    }
+    evutil_make_socket_nonblocking(udp_sock);
+    evutil_make_socket_nonblocking(tcp_sock);
+    udp_addr.sin_family = AF_INET;
+    udp_addr.sin_port = htons(port);
+    udp_addr.sin_addr.s_addr = INADDR_ANY;
+    tcp_addr.sin_family = AF_INET;
+    tcp_addr.sin_port = htons(port);
+    tcp_addr.sin_addr.s_addr = INADDR_ANY;
+    if (bind(udp_sock, (struct sockaddr*) &udp_addr, sizeof(udp_addr)) < 0) {
+        perror("bind udp");
+        exit(1);
+    }
+    if (bind(tcp_sock, (struct sockaddr*) &tcp_addr, sizeof(tcp_addr)) < 0) {
+        perror("bind tcp");
         exit(1);
     }
 
+    if (listen(tcp_sock, 10) < 0) {
+        perror("failed to listen");
+        exit(1);
+    }
     /* bind(2) is done, it's time to drop privileges */
     drop_privileges(priv_user);
     free(priv_user);
-
-    //evdns_add_server_port_with_base(event_base, sock, 0, named_on_evdns_request, NULL);
-    DNSPort *udp_port = dnsport_new(event_base, sock, false, named_on_request, NULL);
+    DNSPort *tcp_port = dnsport_new(event_base, tcp_sock, true, named_on_request, NULL);
+    DNSPort *udp_port = dnsport_new(event_base, udp_sock, false, named_on_request, NULL);
 
     event_base_dispatch(event_base);
     sqlite3_close(named_db);

@@ -1,4 +1,6 @@
 #include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
 #include <errno.h>
 #include <stdint.h>
 #include <string.h>
@@ -15,8 +17,10 @@
 
 #define IS_RETRYABLE(E) ((E) == EINTR || (E) == EAGAIN)
 const int DNS_MAX_UDP_PACKET_SIZE = 1500;
+const int DNS_MIN_UDP_PACKET_SIZE = 12 + 4;
 static const int DNS_MAX_NAME_LENGTH = 256;
 static const int DNS_HEADER_LENGTH = 12;
+static const struct timeval DNS_TCP_TIMEOUT = { .tv_sec = 10, .tv_usec = 0};
 
 struct _DNSPort
 {
@@ -30,7 +34,8 @@ struct _DNSPort
 
 typedef void (*DNSResourceRecordDataEncoder)(uint8_t **rrbuf, uint8_t *rrbuf_len, Buffer *buffer);
 
-void dnsport_read(DNSPort *port);
+void dnsport_read_udp(DNSPort *port);
+void dnsport_read_tcp(DNSPort *port);
 void dnsport_flush(DNSPort *port);
 void dnsport_on_ready(int socket, short flags, void *ctx);
 void dnsport_free(DNSPort *port);
@@ -43,7 +48,7 @@ static DNSResult dnsmessage_parse_nameserver(DNSMessage *msg, uint8_t **body, si
 static DNSResult dns_parse_label(uint8_t *label, size_t label_len, uint8_t **bytes, size_t *bytes_len);
 DNSQuestion *dnsquestion_new(const char *name, DNSQueryType qtype, DNSQueryClass qclass);
 DNSQuestion *dnsquestion_copy(DNSQuestion *other);
-DNSRequest *dnsrequest_new(DNSPort *port, struct sockaddr *src_address, socklen_t src_address_len, DNSMessage *message);
+DNSRequest *dnsrequest_new(DNSPort *port, struct sockaddr *src_address, socklen_t src_address_len, DNSMessage *message, evutil_socket_t socket);
 DNSMessage *dnsmessage_copy(DNSMessage *other);
 void dnsresponse_free(DNSResponse *response);
 Buffer *dns_encode_label(char *name);
@@ -78,14 +83,11 @@ DNSResult dnsmessage_parse(DNSMessage *message, uint8_t *bytes, size_t bytes_len
     pos += 2;
     uint8_t *body = pos;
     size_t body_len = bytes_len - (body - bytes);
-    LOG_DEBUG("parse body (%d)", (int)body_len);
     DNSResult status = DNSOkResult;
     #define DNS_RUN_PARSER(P) { status = P; if (status != DNSOkResult) return status;}
     for (int i = 0; i < question_count; i++) {
-        LOG_DEBUG("parse question")
         DNS_RUN_PARSER(dnsmessage_parse_question(message, &body, &body_len));
     }
-    LOG_DEBUG("parsed questions")
 
     for (int i = 0; i < answer_count; i++) {
         DNS_RUN_PARSER(dnsmessage_parse_answer(message, &body, &body_len));
@@ -99,14 +101,12 @@ DNSResult dnsmessage_parse(DNSMessage *message, uint8_t *bytes, size_t bytes_len
     #undef DNS_RUN_PARSER
     if (body_len > 0)
         return DNSExtraBodyResult;
-    LOG_DEBUG("done parsing message");
     return DNSOkResult;
 }
 
 static DNSResult dns_parse_label(uint8_t *label, size_t label_len, uint8_t **bytes, size_t *bytes_len) {
     __label__ label_too_long;
     __label__ body_too_short;
-    LOG_DEBUG("parse label (%d)", (int)*bytes_len);
     
 
     if (label == NULL)
@@ -238,16 +238,11 @@ void dnsport_handle_request_bytes(DNSPort *port, uint8_t *bytes, ssize_t bytes_l
     const int header_size = 12;
     if (bytes_len < header_size)
         return;
-    DNSRequest *request = dnsrequest_new(port, addr, addr_len, NULL);
+    DNSRequest *request = dnsrequest_new(port, addr, addr_len, NULL, -1);
     if (request == NULL)
         return;
     int status = dnsmessage_parse(request->message, bytes, bytes_len);
     if (status == DNSOkResult) {
-        char *repr = dnsrequest_repr(request);
-        if (repr != NULL) {
-            LOG_DEBUG("handle request: %s", repr);
-            free(repr);
-        }
         if (port->on_dns_request != NULL)
             port->on_dns_request(request, port->on_dns_request_context);
     } else
@@ -255,39 +250,137 @@ void dnsport_handle_request_bytes(DNSPort *port, uint8_t *bytes, ssize_t bytes_l
     dnsrequest_free(request);
 }
 
-void dnsport_read(DNSPort *port) {
-    LOG_DEBUG("read");
+void dnsrequest_tcp_loop(DNSRequest *requst) {
 
-    for (;;) {
-        uint8_t packet[DNS_MAX_UDP_PACKET_SIZE];
-        struct sockaddr addr;
-        socklen_t addr_len;
-        addr_len = sizeof(struct sockaddr_storage);
-        ssize_t packet_len = recvfrom(port->socket, packet, DNS_MAX_UDP_PACKET_SIZE, 0, &addr, &addr_len);
-        if (packet_len > 0) {
-            LOG_DEBUG("read %d byte packet", (int)packet_len);
-            dnsport_handle_request_bytes(port, packet, packet_len, &addr, addr_len);
-            continue;
+}
+
+void dnsrequest_on_event(int socket, short events, void *context) {
+    LOG_DEBUG("request event");
+    DNSRequest *request = (DNSRequest *)context;
+
+    if (events & EV_READ) {
+        LOG_DEBUG("read");
+        uint8_t buf[512];
+        ssize_t read_len = read(request->socket, buf, 512);
+        LOG_DEBUG("read_len: %d", (int)read_len);
+        if (read_len < 0) {
+            if (!IS_RETRYABLE(read_len)) {
+                dnsrequest_free(request);
+                perror("read");
+            }
+            return;
         }
-        int err = evutil_socket_geterror(port->socket);
-        if (IS_RETRYABLE(err))
-            break;
-        LOG_ERROR("Error %s (%d) while reading request.", evutil_socket_error_to_string(err), err);
-        break;
+        if (read_len == 0)
+            return;
+        rope_append_bytes(request->request_buf, buf, read_len);
+        if ((request->request_len < 0) && (rope_length(request->request_buf) > 2)) {
+            Buffer *b = rope_slice(request->request_buf, 0, 2);
+            request->request_len = ntohs(*((uint16_t *)buffer_data(b)));
+            buffer_free(b);
+        }
+
+        LOG_DEBUG("request_len: %d", (int)request->request_len);
+        LOG_DEBUG("buffer_len: %d", (int)rope_length(request->request_buf));
+        if (request->request_len > (rope_length(request->request_buf) + 2)) {
+            return;
+        }
+        LOG_DEBUG("done reading request");
+        // stop reading
+        event_del(request->event);
+        event_free(request->event);
+        request->event = NULL;
+        Buffer *b = rope_flatten(request->request_buf);
+        if (request->request_len < buffer_length(b))
+            LOG_ERROR("extra request bytes: %d", (int)(buffer_length(b) - request->request_len));
+
+        int status = dnsmessage_parse(request->message, buffer_data(b) + 2, request->request_len);
+        if (status == DNSOkResult) {
+            char *repr = dnsrequest_repr(request);
+            if (repr != NULL) {
+                LOG_DEBUG("request: %s", repr);
+                free(repr);
+            }
+            if (request->port->on_dns_request != NULL) {
+                request->port->on_dns_request(request, request->port->on_dns_request_context);
+            }
+        } else {
+            LOG_ERROR("failed to parse message: %d", status);
+        }
+        dnsrequest_free(request);
+    } else {
+        LOG_DEBUG("unhandled event: %d", (int)events);
+        exit(1);
     }
+}
+
+void dnsport_read_tcp(DNSPort *port) {
+    LOG_DEBUG("read tcp");
+    struct sockaddr addr;
+    socklen_t addr_len;
+    int conn_sock = accept(port->socket, &addr, &addr_len);
+    if (conn_sock < 0) {
+        if (conn_sock == EWOULDBLOCK || conn_sock == EINTR)
+            return;
+        perror("accept");
+        return;
+    }
+
+    DNSRequest *request = dnsrequest_new(port, &addr, addr_len, NULL, conn_sock);
+    request->event = event_new(port->event_base, conn_sock, EV_READ | EV_PERSIST, dnsrequest_on_event, request);  
+    request->request_len = -1;
+    request->request_buf = rope_new();
+    event_add(request->event, &DNS_TCP_TIMEOUT);
+}
+
+
+
+void dnsport_read_udp(DNSPort *port) {
+    LOG_DEBUG("read udp");
+
+    uint8_t packet[DNS_MAX_UDP_PACKET_SIZE];
+    struct sockaddr addr;
+    socklen_t addr_len;
+    addr_len = sizeof(struct sockaddr_storage);
+    ssize_t packet_len = recvfrom(port->socket, packet, DNS_MAX_UDP_PACKET_SIZE, 0, &addr, &addr_len);
+    LOG_DEBUG("read %d byte packet", (int)packet_len);
+    if (packet_len < 0) {
+        if (!IS_RETRYABLE(packet_len))
+            LOG_ERROR("Error %s (%d) while reading request.", evutil_socket_error_to_string((int)packet_len), (int)packet_len);
+        return;
+    }
+    if (packet_len < DNS_MIN_UDP_PACKET_SIZE) {
+        LOG_ERROR("packet size too small");
+        return;
+    }
+    DNSRequest *request = dnsrequest_new(port, &addr, addr_len, NULL, -1);
+    if (request == NULL)
+        return;
+    int status = dnsmessage_parse(request->message, packet, packet_len);
+    if (status == DNSOkResult) {
+        char *repr = dnsrequest_repr(request);
+        if (repr != NULL) {
+            free(repr);
+        }
+        if (port->on_dns_request != NULL)
+            port->on_dns_request(request, port->on_dns_request_context);
+    } else
+        LOG_ERROR("failed to parse message: %d", status);
+    dnsrequest_free(request);
+
 }
 
 
 void dnsport_on_ready(int socket, short flags, void *ctx)
 {
     DNSPort *port = (DNSPort *)ctx;
-    LOG_DEBUG("port ready");
     if (flags & EV_WRITE) {
         dnsport_flush(port);
     }
-
     if (flags & EV_READ) {
-        dnsport_read(port);
+        if (port->is_tcp)
+            dnsport_read_tcp(port);
+        else
+            dnsport_read_udp(port);
     }
 }
 
@@ -367,10 +460,11 @@ void dnsresourcerecord_free(DNSResourceRecord *answer)
     free(answer);
 }
 
-DNSRequest *dnsrequest_new(DNSPort *port, struct sockaddr *src_address, socklen_t src_address_len, DNSMessage *message)
+DNSRequest *dnsrequest_new(DNSPort *port, struct sockaddr *src_address, socklen_t src_address_len, DNSMessage *message, evutil_socket_t socket)
 {
     DNSRequest *request = calloc(1, sizeof(DNSRequest));
     request->port = port;
+    request->socket = socket;
     request->message = message != NULL ? dnsmessage_copy(message) : dnsmessage_new();
     request->src_address = malloc(src_address_len);
     request->src_address_len = src_address_len;
@@ -378,27 +472,73 @@ DNSRequest *dnsrequest_new(DNSPort *port, struct sockaddr *src_address, socklen_
     return request;
 }
 
-void dnsresponse_finish(DNSResponse *response) {
+
+void dnsresponse_finish_udp(DNSResponse *response) {
     // do network sending things here!
+
     LOG_DEBUG("finishing response");
-    if (response->response_buffer == NULL) {
+    if (response->response_buf == NULL) {
         LOG_DEBUG("encoding response");
-        response->response_buffer = dnsmessage_encode(response->message);
+        response->response_buf = dnsmessage_encode(response->message);
     }
-    void *buf = buffer_data(response->response_buffer) + response->sent_counter;
-    size_t size = buffer_length(response->response_buffer) - response->sent_counter;
+    void *buf = buffer_data(response->response_buf) + response->sent_counter;
+    size_t size = buffer_length(response->response_buf) - response->sent_counter;
     LOG_DEBUG("sending response (%d)", (int)size);
     ssize_t sent = sendto(response->request->port->socket, buf, size, 0, response->request->src_address, response->request->src_address_len); 
     if (sent != size) {
         LOG_ERROR("left over response!");
     }
-    LOG_DEBUG("freeing response");
     dnsresponse_free(response);
-    LOG_DEBUG("response freed");
+}
+
+void dnsresponse_tcp_event(evutil_socket_t sock, short events, void *context) {
+    DNSResponse *response = (DNSResponse *)context;
+    if (events & EV_WRITE) {
+        ssize_t written = write(sock, buffer_data(response->response_buf) + response->sent_counter, buffer_length(response->response_buf) - response->sent_counter);
+        if (written < 0) {
+            if ((written == EAGAIN) || (written == EAGAIN)) {
+                return; 
+            }
+            LOG_ERROR("write error: %d", (int)written);
+            goto cleanup;
+        }
+        response->sent_counter += written;
+        if (response->sent_counter == buffer_length(response->response_buf)) {
+            goto cleanup;
+        }
+    } else if (events & EV_TIMEOUT) {
+        LOG_DEBUG("write timeout");
+        goto cleanup;
+    }
+cleanup:
+    close(sock);
+    dnsresponse_free(response);
+}
+
+void dnsresponse_finish_tcp(DNSResponse *response) {
+   // do network sending things here!
+    if (response->response_buf != NULL) {
+        LOG_ERROR("already encoded response");
+        exit(1);
+    }
+    Buffer *msg_buf = dnsmessage_encode(response->message);
+    response->response_buf = buffer_empty(buffer_length(msg_buf) + 2);
+    memcpy(buffer_data(response->response_buf) + 2, buffer_data(msg_buf), buffer_length(msg_buf));
+    *((uint16_t *)buffer_data(response->response_buf)) = htons((uint16_t)buffer_length(msg_buf));
+    response->event = event_new(response->request->port->event_base, response->request->socket, EV_WRITE | EV_PERSIST, dnsresponse_tcp_event, response);
+    event_add(response->event, &DNS_TCP_TIMEOUT);
+    LOG_DEBUG("sending response");
+}
+
+void dnsresponse_finish(DNSResponse *response) { 
+    if (response->request->port->is_tcp) 
+        dnsresponse_finish_tcp(response);
+    else
+        dnsresponse_finish_udp(response);
+
 }
 
 void dnsmessage_encode_header(DNSMessage *message, Rope *stringbuf) {
-    LOG_DEBUG("encoding header");
     uint8_t bytes[DNS_HEADER_LENGTH];
     memset(bytes, 0, DNS_HEADER_LENGTH);
     uint8_t *pos = bytes;
@@ -445,11 +585,9 @@ void dnsquestion_encode(DNSQuestion *question, Rope *string_buf)
  * 'c' 'o' 'm' 0]
  */ 
 Buffer *dns_encode_label(char *name) {
-    LOG_DEBUG("encode label");
     size_t n = strlen(name);
     while ((n > 0) && (name[n - 1] == '.'))
         n--;
-    LOG_DEBUG("encode label: %s, %d", name, (int)n);
     uint8_t buf[n + 2];
     memset(buf, 0, sizeof(buf));
     memcpy(buf + 1, name, n);
@@ -461,7 +599,6 @@ Buffer *dns_encode_label(char *name) {
             chunk_size++;
             p--;
         }
-        LOG_DEBUG("chunk size: %d", (int)chunk_size);
         if (chunk_size != 0)
             *p = chunk_size;
         p--;
@@ -528,23 +665,22 @@ Buffer *dnsmessage_encode(DNSMessage *message)
         DNSResourceRecord *record = (DNSResourceRecord *)item;
         dnsresourcerecord_encode(record, string_buf);
     }
-    LOG_DEBUG("encoding questions");
     list_iterate(message->questions, (ListIterateFunc)enc_question, NULL);
-    LOG_DEBUG("encoding answers");
     list_iterate(message->answers, (ListIterateFunc)enc_rr, NULL);
-    LOG_DEBUG("encoding nameservers");
     list_iterate(message->nameservers, (ListIterateFunc)enc_rr, NULL);
-    LOG_DEBUG("encoding additional");
     list_iterate(message->additional, (ListIterateFunc)enc_rr, NULL);
-    LOG_DEBUG("flattening");
     return rope_flatten(string_buf);
 }
 
 void dnsresponse_free(DNSResponse *response) {
+    if (response->event) {
+        event_del(response->event);
+        event_free(response->event);
+    }
     dnsrequest_free(response->request);
     dnsmessage_free(response->message);
-    if (response->response_buffer != NULL)
-        buffer_free(response->response_buffer);
+    if (response->response_buf != NULL)
+        buffer_free(response->response_buf);
     free(response);
 }
 
@@ -557,6 +693,12 @@ int dnsrequest_add_question(DNSRequest *request, const char *name, DNSQueryType
 
 void dnsrequest_free(DNSRequest *request) {
     free(request->src_address);
+    if (request->event != NULL) {
+        event_del(request->event);
+        event_free(request->event);
+    }
+    if (request->request_buf != NULL)
+        rope_free(request->request_buf);
     dnsmessage_free(request->message);
     free(request);
 }
@@ -592,7 +734,7 @@ DNSMessage *dnsmessage_copy(DNSMessage *other) {
 
 DNSResponse *dnsresponse_new(DNSRequest *request) {
     DNSResponse *response = calloc(sizeof(DNSResponse), 1);
-    response->request = dnsrequest_new(request->port, request->src_address, request->src_address_len, request->message);
+    response->request = dnsrequest_new(request->port, request->src_address, request->src_address_len, request->message, request->socket);
     response->message = dnsmessage_copy(response->request->message);
     response->message->is_query_response = 1;
     return response;

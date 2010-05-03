@@ -13,6 +13,7 @@ Rope *rope_new();
 void rope_append_cstr(Rope *r, const char *s);
 void rope_append_bytes(Rope *r, const uint8_t *bytes, size_t len);
 void rope_append_buffer(Rope *r, const Buffer *buffer);
+Buffer *rope_slice(Rope *r, ssize_t start, ssize_t end);
 size_t rope_length(const Rope *r);
 Buffer *rope_flatten(const Rope *r);
 void rope_free(Rope *r);

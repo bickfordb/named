@@ -1,4 +1,7 @@
-/* buffer: useful for passing around byte buckets */ 
+/* buffer: useful for passing around byte buckets
+ *
+ * This is just a heap allocated tuple of (void *, size_t)
+ */ 
 
 #ifndef __BUFFER_H__
 #define __BUFFER_H__

@@ -5,6 +5,7 @@
 
 #include "list.h"
 #include "buffer.h"
+#include "rope.h"
 
 /* Records whose type is <= 16 are described in RFC 1035 */
 typedef enum {
@@ -58,6 +59,12 @@ struct _DNSRequest
    DNSPort *port;
    struct sockaddr *src_address;
    socklen_t src_address_len;
+
+   // For TCP connections:
+   struct event *event;
+   ssize_t request_len;
+   Rope *request_buf;
+   int socket;
 };
 
 typedef enum
@@ -89,8 +96,9 @@ struct _DNSResponse
 {
     DNSRequest *request;
     DNSMessage *message;
-    Buffer *response_buffer;
+    Buffer *response_buf;
     size_t sent_counter;
+    struct event *event;
 };
 
 DNSPort *dnsport_new(struct event_base *event_base, int socket, bool is_tcp, OnDNSRequest on_dns_request, void *on_dns_request_context);
