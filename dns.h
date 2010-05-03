@@ -105,9 +105,9 @@ DNSPort *dnsport_new(struct event_base *event_base, int socket, bool is_tcp, OnD
 DNSMessage *dnsrequest_message(DNSRequest *);
 List *dnsmessage_answers(DNSMessage *);
 List *dnsmessage_questions(DNSMessage *);
-char *dnsrequest_repr(DNSRequest *request);
-char *dnsmessage_repr(DNSMessage *message);
-char *dnsquestion_repr(DNSQuestion *question);
+void dnsrequest_repr(DNSRequest *request, Rope *rope);
+void dnsmessage_repr(DNSMessage *message, Rope *rope);
+void dnsquestion_repr(DNSQuestion *question, Rope *rope);
 DNSResourceRecord *dnsresourcerecord_new(const char *name, DNSQueryType qtype, DNSQueryClass qclass, int ttl, Buffer *data);
 void dnsresourcerecord_free(DNSResourceRecord *record);
 DNSResponse *dnsresponse_new(DNSRequest *request);

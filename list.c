@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <string.h>
 #include "list.h"
+#include "rope.h"
+
 
 struct _ListItem;
 struct _List { 
@@ -71,25 +73,18 @@ int list_length(List *list) {
     return list->size;
 }
 
-char *list_repr(List *list, ListReprFunc repr_func) {
-    ListItem *i = list->head;
-    char *repr = NULL;
-    while (i != NULL) {
-        char *val_repr = repr_func(i->value);
-        if (repr == NULL)
-            asprintf(&repr, "[%s", val_repr);
-        else {
-            char *old_repr = repr;
-            asprintf(&repr, "%s, %s", repr, val_repr);
-            free(old_repr); 
-        }
-        free(val_repr);
-        i = i->next;
+void list_repr(List *list, Rope *rope, ListReprFunc repr_func) {
+    ListItem *item = list->head;
+    rope_append_cstr(rope, "[");
+    int i = 0;
+    while (item != NULL) {
+        if (i > 0)
+            rope_append_cstr(rope, ", ");
+        repr_func(item->value, rope);
+        i++;
+        item = item->next;
     }
-    char *old_repr = repr;
-    asprintf(&repr, "%s]", repr);
-    free(old_repr);
-    return repr;
+    rope_append_cstr(rope, "]");
 }
 
 List *list_copy(List *other, ListCopyFunc copy_func) {

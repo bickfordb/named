@@ -201,33 +201,22 @@ static DNSResult dnsmessage_parse_question(DNSMessage *msg, uint8_t **body, size
     return DNSOkResult;
 }
 
-void dnsport_handle_request(DNSPort *port, DNSRequest *request) {
-
+void dnsrequest_repr(DNSRequest *request, Rope *rope) {
+    rope_append_cstr(rope, "(DNSRequest message=");
+    dnsmessage_repr(request->message, rope);
+    rope_append_cstr(rope, ")");
 }
 
-char *dnsrequest_repr(DNSRequest *request) {
-    char *message_repr = dnsmessage_repr(request->message);
-    if (message_repr == NULL)
-        return NULL;
-    char *repr = NULL;
-    asprintf(&repr, "{message:%s}", message_repr);
-    free(message_repr);
-    return repr;
+void dnsmessage_repr(DNSMessage *message, Rope *rope) {
+    rope_append_cstr(rope, "(DNSMessage questions=");
+    list_repr(message->questions, rope, (ListReprFunc)dnsquestion_repr);
+    rope_append_cstr(rope, ")");
 }
 
-char *dnsmessage_repr(DNSMessage *message) {
-    char *questions_repr = list_repr(message->questions, (ListReprFunc)dnsquestion_repr);
-    char *repr = NULL;
-    int succ = asprintf(&repr, "{questions:%s}", questions_repr);
-    if (succ >= 0 && questions_repr != NULL)
-        free(questions_repr);
-    return repr;
-}
-
-char *dnsquestion_repr(DNSQuestion *question) {
-    char *repr = NULL;
-    asprintf(&repr, "{name:\"%s\", qclass:%d, qtype:%d}", question->name, (int)question->qclass, (int)question->qtype);
-    return repr;
+void dnsquestion_repr(DNSQuestion *question, Rope *rope) {
+    char buf[192];
+    sprintf(buf, "(DNSQuestion name:\"%s\", qclass:%d, qtype:%d)", question->name, (int)question->qclass, (int)question->qtype);
+    rope_append_cstr(rope, buf);
 }
 
 void dnsport_handle_request_bytes(DNSPort *port, uint8_t *bytes, ssize_t bytes_len, struct sockaddr *addr, socklen_t addr_len)
@@ -281,11 +270,14 @@ void dnsrequest_on_event(int socket, short events, void *context) {
 
         int status = dnsmessage_parse(request->message, buffer_data(b) + 2, request->request_len);
         if (status == DNSOkResult) {
-            char *repr = dnsrequest_repr(request);
-            if (repr != NULL) {
-                LOG_DEBUG("request: %s", repr);
-                free(repr);
+            Rope *rope = rope_new();
+            dnsrequest_repr(request, rope);
+            Buffer *buffer = rope_flatten(rope);
+            if (buffer != NULL) {
+                LOG_DEBUG("request: %s", (char *)buffer_data(buffer));
             }
+            buffer_free(buffer);
+            rope_free(rope);
             if (request->port->on_dns_request != NULL) {
                 request->port->on_dns_request(request, request->port->on_dns_request_context);
             }
@@ -320,9 +312,9 @@ void dnsport_read_tcp(DNSPort *port) {
 
 
 
-void dnsport_read_udp(DNSPort *port) {
+void dnsport_read_udp(DNSPort *port)
+{
     LOG_DEBUG("read udp");
-
     uint8_t packet[DNS_MAX_UDP_PACKET_SIZE];
     struct sockaddr addr;
     socklen_t addr_len;
@@ -343,18 +335,14 @@ void dnsport_read_udp(DNSPort *port) {
         return;
     int status = dnsmessage_parse(request->message, packet, packet_len);
     if (status == DNSOkResult) {
-        char *repr = dnsrequest_repr(request);
-        if (repr != NULL) {
-            free(repr);
-        }
         if (port->on_dns_request != NULL)
             port->on_dns_request(request, port->on_dns_request_context);
-    } else
+    } else {
         LOG_ERROR("failed to parse message: %d", status);
+    }
     dnsrequest_free(request);
 
 }
-
 
 void dnsport_on_ready(int socket, short flags, void *ctx)
 {
