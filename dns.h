@@ -116,5 +116,6 @@ DNSMessage *dnsresponse_message(DNSResponse *response);
 void dnsresponse_finish(DNSResponse *response);
 DNSResourceRecord *dnsresourcerecord_copy(DNSResourceRecord *other);
 Buffer *dnsmessage_encode(DNSMessage*);
+void dnsport_free(DNSPort *);
 
 #endif // __DNS_H__

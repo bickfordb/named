@@ -73,7 +73,6 @@ int list_length(List *list) {
 
 char *list_repr(List *list, ListReprFunc repr_func) {
     ListItem *i = list->head;
-    int idx = 0;
     char *repr = NULL;
     while (i != NULL) {
         char *val_repr = repr_func(i->value);

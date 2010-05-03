@@ -38,14 +38,13 @@ void dnsport_read_udp(DNSPort *port);
 void dnsport_read_tcp(DNSPort *port);
 void dnsport_flush(DNSPort *port);
 void dnsport_on_ready(int socket, short flags, void *ctx);
-void dnsport_free(DNSPort *port);
 DNSMessage *dnsmessage_new();
 void dnsmessage_free(DNSMessage *message);
 static DNSResult dnsmessage_parse_question(DNSMessage *msg, uint8_t **body, size_t *body_len);
 static DNSResult dnsmessage_parse_answer(DNSMessage *msg, uint8_t **body, size_t *body_len);
 static DNSResult dnsmessage_parse_additional(DNSMessage *msg, uint8_t **body, size_t *body_len);
 static DNSResult dnsmessage_parse_nameserver(DNSMessage *msg, uint8_t **body, size_t *body_len);
-static DNSResult dns_parse_label(uint8_t *label, size_t label_len, uint8_t **bytes, size_t *bytes_len);
+static DNSResult dns_parse_label(char *label, size_t label_len, uint8_t **bytes, size_t *bytes_len);
 DNSQuestion *dnsquestion_new(const char *name, DNSQueryType qtype, DNSQueryClass qclass);
 DNSQuestion *dnsquestion_copy(DNSQuestion *other);
 DNSRequest *dnsrequest_new(DNSPort *port, struct sockaddr *src_address, socklen_t src_address_len, DNSMessage *message, evutil_socket_t socket);
@@ -104,10 +103,9 @@ DNSResult dnsmessage_parse(DNSMessage *message, uint8_t *bytes, size_t bytes_len
     return DNSOkResult;
 }
 
-static DNSResult dns_parse_label(uint8_t *label, size_t label_len, uint8_t **bytes, size_t *bytes_len) {
+static DNSResult dns_parse_label(char *label, size_t label_len, uint8_t **bytes, size_t *bytes_len) {
     __label__ label_too_long;
     __label__ body_too_short;
-
 
     if (label == NULL)
         return DNSGeneralFailureResult;
@@ -186,7 +184,6 @@ static DNSResult dnsmessage_parse_nameserver(DNSMessage *msg, uint8_t **body, si
 static DNSResult dnsmessage_parse_question(DNSMessage *msg, uint8_t **body, size_t *body_len) {
     DNSQueryType qtype;
     DNSQueryClass qclass;
-    size_t consumed = 0;
     char *label = calloc(DNS_MAX_NAME_LENGTH, 1);
     if (label == NULL)
         return DNSGeneralFailureResult;

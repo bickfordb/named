@@ -30,17 +30,10 @@ typedef void (*NamedAnswerFunc)(DNSResourceRecord *record);
 static void named_query(const char *name, DNSQueryClass qclass, DNSQueryType qtype, NamedAnswerFunc);
 static void named_on_request(DNSRequest *req, void *data);
 
-static const int NAMED_TTL = 300;
 static sqlite3 *named_db = NULL;
-static const char *NAMED_COL_DATA = "rdata";
-static const char *NAMED_COL_TTL = "ttl";
-static const char *NAMED_COL_QCLASS = "qclass";
-static const char *NAMED_COL_QTYPE = "qtype";
-static const char *NAMED_COL_NAME = "name";
 
 static void named_query(const char *name, DNSQueryClass qclass, DNSQueryType qtype, NamedAnswerFunc on_answer)
 {
-    char *error_msg = NULL;
     char *sql;
     LOG_DEBUG("query: %s, class: %d, type: %d", name, qtype, qclass);
     if (qtype != DNSWildcardQueryType && qclass != DNSWildcardQueryClass)
@@ -70,7 +63,7 @@ static void named_query(const char *name, DNSQueryClass qclass, DNSQueryType qty
         } else if (rc == SQLITE_OK || rc == SQLITE_ROW) {
             Buffer *rr_data_buf = buffer_new(sqlite3_column_blob(stmt, 3), sqlite3_column_bytes(stmt, 3));
             DNSResourceRecord *record = dnsresourcerecord_new(
-                    sqlite3_column_text(stmt, 0),
+                    (const char *)sqlite3_column_text(stmt, 0),
                     sqlite3_column_int(stmt, 1),
                     sqlite3_column_int(stmt, 2),
                     sqlite3_column_int(stmt, 4),
@@ -89,7 +82,6 @@ static void named_query(const char *name, DNSQueryClass qclass, DNSQueryType qty
 
 static void named_on_request(DNSRequest *req, void *data)
 {
-    uint32_t ttl = 300;
     LOG_DEBUG("rx request");
     DNSResponse *response = dnsresponse_new(req);
     void on_answer(DNSResourceRecord *record) {
@@ -103,11 +95,6 @@ static void named_on_request(DNSRequest *req, void *data)
     list_iterate(response->message->questions, on_question, NULL);
     dnsresponse_finish(response);
     LOG_DEBUG("responded");
-}
-
-static void named_logger(int is_warn, const char *msg)
-{
-    fprintf(stderr, "%s: %s\n", is_warn ? "WARN" : "INFO", msg);
 }
 
 static void drop_privileges(const char *pw_name)
@@ -144,7 +131,7 @@ int main(int argc, char **argv)
             log_level = LogDebugLevel;
             break;
         case 'p':
-            if (1 <= atoi(optarg) < (1 << 16))
+            if ((1 <= atoi(optarg)) && (atoi(optarg) < (1 << 16)))
                 port = atoi(optarg);
             break;
         case 'u':
@@ -198,8 +185,10 @@ int main(int argc, char **argv)
     free(priv_user);
     DNSPort *tcp_port = dnsport_new(event_base, tcp_sock, true, named_on_request, NULL);
     DNSPort *udp_port = dnsport_new(event_base, udp_sock, false, named_on_request, NULL);
-
     event_base_dispatch(event_base);
+    dnsport_free(tcp_port);
+    dnsport_free(udp_port);
+
     sqlite3_close(named_db);
     LOG_INFO("done")
     return 0;
