@@ -250,19 +250,12 @@ void dnsport_handle_request_bytes(DNSPort *port, uint8_t *bytes, ssize_t bytes_l
     dnsrequest_free(request);
 }
 
-void dnsrequest_tcp_loop(DNSRequest *requst) {
-
-}
-
 void dnsrequest_on_event(int socket, short events, void *context) {
-    LOG_DEBUG("request event");
     DNSRequest *request = (DNSRequest *)context;
 
     if (events & EV_READ) {
-        LOG_DEBUG("read");
         uint8_t buf[512];
         ssize_t read_len = read(request->socket, buf, 512);
-        LOG_DEBUG("read_len: %d", (int)read_len);
         if (read_len < 0) {
             if (!IS_RETRYABLE(read_len)) {
                 dnsrequest_free(request);
@@ -278,13 +271,9 @@ void dnsrequest_on_event(int socket, short events, void *context) {
             request->request_len = ntohs(*((uint16_t *)buffer_data(b)));
             buffer_free(b);
         }
-
-        LOG_DEBUG("request_len: %d", (int)request->request_len);
-        LOG_DEBUG("buffer_len: %d", (int)rope_length(request->request_buf));
         if (request->request_len > (rope_length(request->request_buf) + 2)) {
             return;
         }
-        LOG_DEBUG("done reading request");
         // stop reading
         event_del(request->event);
         event_free(request->event);
@@ -496,7 +485,7 @@ void dnsresponse_tcp_event(evutil_socket_t sock, short events, void *context) {
     if (events & EV_WRITE) {
         ssize_t written = write(sock, buffer_data(response->response_buf) + response->sent_counter, buffer_length(response->response_buf) - response->sent_counter);
         if (written < 0) {
-            if ((written == EAGAIN) || (written == EAGAIN)) {
+            if ((written == EINTR) || (written == EAGAIN)) {
                 return; 
             }
             LOG_ERROR("write error: %d", (int)written);
@@ -524,6 +513,7 @@ void dnsresponse_finish_tcp(DNSResponse *response) {
     Buffer *msg_buf = dnsmessage_encode(response->message);
     response->response_buf = buffer_empty(buffer_length(msg_buf) + 2);
     memcpy(buffer_data(response->response_buf) + 2, buffer_data(msg_buf), buffer_length(msg_buf));
+    buffer_free(msg_buf);
     *((uint16_t *)buffer_data(response->response_buf)) = htons((uint16_t)buffer_length(msg_buf));
     response->event = event_new(response->request->port->event_base, response->request->socket, EV_WRITE | EV_PERSIST, dnsresponse_tcp_event, response);
     event_add(response->event, &DNS_TCP_TIMEOUT);
@@ -673,7 +663,7 @@ Buffer *dnsmessage_encode(DNSMessage *message)
 }
 
 void dnsresponse_free(DNSResponse *response) {
-    if (response->event) {
+    if (response->event != NULL) {
         event_del(response->event);
         event_free(response->event);
     }
