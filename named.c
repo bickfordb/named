@@ -26,15 +26,13 @@
 #include "buffer.h"
 #include "list.h"
 
-
 typedef void (*NamedAnswerFunc)(DNSResourceRecord *record);
-
 static void named_query(const char *name, DNSQueryClass qclass, DNSQueryType qtype, NamedAnswerFunc);
 static void named_on_request(DNSRequest *req, void *data);
 
 static const int NAMED_TTL = 300;
 static sqlite3 *named_db = NULL;
-static const char *NAMED_COL_DATA = "data";
+static const char *NAMED_COL_DATA = "rdata";
 static const char *NAMED_COL_TTL = "ttl";
 static const char *NAMED_COL_QCLASS = "qclass";
 static const char *NAMED_COL_QTYPE = "qtype";
@@ -43,54 +41,50 @@ static const char *NAMED_COL_NAME = "name";
 static void named_query(const char *name, DNSQueryClass qclass, DNSQueryType qtype, NamedAnswerFunc on_answer)
 {
     char *error_msg = NULL;
-    char sql[256 + strlen(name)];
+    char *sql;
     LOG_DEBUG("query: %s, class: %d, type: %d", name, qtype, qclass);
-
     if (qtype != DNSWildcardQueryType && qclass != DNSWildcardQueryClass)
-        sprintf(sql, "SELECT name, qtype, qclass, data, ttl FROM responses WHERE name = '%s' AND qclass = %d AND qtype = %d", name, (int)qclass, (int)qtype);
+        sql = sqlite3_mprintf("SELECT name, qtype, qclass, rdata, ttl FROM responses WHERE name = '%s' AND qclass = %d AND qtype = %d", name, (int) qclass, (int) qtype);
     else if (qtype == DNSWildcardQueryType)
-        sprintf(sql, "SELECT name, qtype, qclass, data, ttl FROM responses WHERE name = '%s' AND qclass = %d", name, (int)qclass);
+        sql = sqlite3_mprintf("SELECT name, qtype, qclass, rdata, ttl FROM responses WHERE name = '%s' AND qclass = %d", name, (int) qclass);
     else if (qclass == DNSWildcardQueryClass)
-        sprintf(sql, "SELECT name, qtype, qclass, data, ttl FROM responses WHERE name = '%s' AND qtype = %d", name, (int)qtype);
+        sql = sqlite3_mprintf("SELECT name, qtype, qclass, rdata, ttl FROM responses WHERE name = '%s' AND qtype = %d", name, (int) qtype);
     else
-        sprintf(sql, "SELECT name, qtype, qclass, data, ttl FROM responses WHERE name = '%s'", name);
+        sql = sqlite3_mprintf("SELECT name, qtype, qclass, rdata, ttl FROM responses WHERE name = '%s'", name);
 
-    int query_name_response(void *ctx, int col_count, char **data, char **column_names) {
-        const char *response_data = "";
-        const char *qname = "";
-        DNSQueryClass qclass = DNSInternetQueryClass;
-        DNSQueryType qtype = DNSTxtQueryType;
-        uint32_t ttl = NAMED_TTL;
-        Buffer *buf = NULL;
-        for (int i = 0; i < col_count; i++) {
-            const char *col = column_names[i];
-            const char *val = data[i];
-            if (val == NULL)
-                continue;
-            if (strcmp(col, NAMED_COL_DATA) == 0) {
-                buf = buffer_new((uint8_t *)val, strlen(val));
-            } else if (strcmp(col, NAMED_COL_TTL) == 0)
-                ttl = atoi(val);
-            else if (strcmp(col, NAMED_COL_NAME) == 0)
-                qname = val;
-            else if (strcmp(col, NAMED_COL_QCLASS) == 0)
-                qclass = atoi(val);
-            else if (strcmp(col, NAMED_COL_QTYPE) == 0)
-                qtype = atoi(val);
+    const char *left;
+    sqlite3_stmt *stmt;
+
+    int rc = sqlite3_prepare_v2(named_db, sql, -1, &stmt, &left);
+    if ((rc == SQLITE_BUSY) || (rc == SQLITE_LOCKED)) {
+        LOG_ERROR("the sqlite database seems to be locked or busy");
+    } else if (rc != SQLITE_OK) {
+        LOG_ERROR("unknown error while preparing sqlite statement: rc = %d", rc);
+    }
+    sqlite3_reset(stmt);
+    while (1) {
+        rc = sqlite3_step(stmt);
+        if (rc == SQLITE_DONE) {
+            // query is done returning results, nothing to see here
+            break;
+        } else if (rc == SQLITE_OK || rc == SQLITE_ROW) {
+            Buffer *rr_data_buf = buffer_new(sqlite3_column_blob(stmt, 3), sqlite3_column_bytes(stmt, 3));
+            DNSResourceRecord *record = dnsresourcerecord_new(
+                    sqlite3_column_text(stmt, 0),
+                    sqlite3_column_int(stmt, 1),
+                    sqlite3_column_int(stmt, 2),
+                    sqlite3_column_int(stmt, 4),
+                    rr_data_buf);
+            buffer_free(rr_data_buf);
+            on_answer(record);
+            dnsresourcerecord_free(record);
+        } else {
+            LOG_ERROR("unknown error in sqlite3_step: rc = %d", rc);
+            exit(1);
         }
-        DNSResourceRecord *record = dnsresourcerecord_new(qname, qtype, qclass, ttl, buf);
-        buffer_free(buf);
-        on_answer(record);
-        dnsresourcerecord_free(record);
-        return 0;
     }
-
-    int rc = sqlite3_exec(named_db, sql, query_name_response, 0, &error_msg);
-    if (rc != SQLITE_OK) {
-        LOG_ERROR("SQL Error: %s", error_msg);
-        sqlite3_free(error_msg);
-        exit(1);
-    }
+    sqlite3_finalize(stmt);
+    sqlite3_free(sql);
 }
 
 static void named_on_request(DNSRequest *req, void *data)

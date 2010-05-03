@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS responses (
     qclass INTEGER,
     qtype INTEGER,
     ttl INTEGER,
-    data BLOB
+    rdata BLOB
 );
 
 CREATE INDEX responses_name_idx ON responses (name);

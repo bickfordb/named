@@ -107,7 +107,7 @@ DNSResult dnsmessage_parse(DNSMessage *message, uint8_t *bytes, size_t bytes_len
 static DNSResult dns_parse_label(uint8_t *label, size_t label_len, uint8_t **bytes, size_t *bytes_len) {
     __label__ label_too_long;
     __label__ body_too_short;
-    
+
 
     if (label == NULL)
         return DNSGeneralFailureResult;
@@ -315,7 +315,7 @@ void dnsport_read_tcp(DNSPort *port) {
     }
 
     DNSRequest *request = dnsrequest_new(port, &addr, addr_len, NULL, conn_sock);
-    request->event = event_new(port->event_base, conn_sock, EV_READ | EV_PERSIST, dnsrequest_on_event, request);  
+    request->event = event_new(port->event_base, conn_sock, EV_READ | EV_PERSIST, dnsrequest_on_event, request);
     request->request_len = -1;
     request->request_buf = rope_new();
     event_add(request->event, &DNS_TCP_TIMEOUT);
@@ -473,7 +473,7 @@ void dnsresponse_finish_udp(DNSResponse *response) {
     void *buf = buffer_data(response->response_buf) + response->sent_counter;
     size_t size = buffer_length(response->response_buf) - response->sent_counter;
     LOG_DEBUG("sending response (%d)", (int)size);
-    ssize_t sent = sendto(response->request->port->socket, buf, size, 0, response->request->src_address, response->request->src_address_len); 
+    ssize_t sent = sendto(response->request->port->socket, buf, size, 0, response->request->src_address, response->request->src_address_len);
     if (sent != size) {
         LOG_ERROR("left over response!");
     }
@@ -486,7 +486,7 @@ void dnsresponse_tcp_event(evutil_socket_t sock, short events, void *context) {
         ssize_t written = write(sock, buffer_data(response->response_buf) + response->sent_counter, buffer_length(response->response_buf) - response->sent_counter);
         if (written < 0) {
             if ((written == EINTR) || (written == EAGAIN)) {
-                return; 
+                return;
             }
             LOG_ERROR("write error: %d", (int)written);
             goto cleanup;
@@ -520,8 +520,8 @@ void dnsresponse_finish_tcp(DNSResponse *response) {
     LOG_DEBUG("sending response");
 }
 
-void dnsresponse_finish(DNSResponse *response) { 
-    if (response->request->port->is_tcp) 
+void dnsresponse_finish(DNSResponse *response) {
+    if (response->request->port->is_tcp)
         dnsresponse_finish_tcp(response);
     else
         dnsresponse_finish_udp(response);
@@ -554,7 +554,7 @@ void dnsmessage_encode_header(DNSMessage *message, Rope *stringbuf) {
 }
 
 void dnsquestion_encode(DNSQuestion *question, Rope *string_buf)
-{ 
+{
     Buffer *label_buf = dns_encode_label(question->name);
     rope_append_buffer(string_buf, label_buf);
     buffer_free(label_buf);
@@ -572,7 +572,7 @@ void dnsquestion_encode(DNSQuestion *question, Rope *string_buf)
  *
  * For example 'hi.there.com' is encoded as [2 'h' 'i' 5 't' h' 'e' 'r' 'e' 3
  * 'c' 'o' 'm' 0]
- */ 
+ */
 Buffer *dns_encode_label(char *name) {
     size_t n = strlen(name);
     while ((n > 0) && (name[n - 1] == '.'))
@@ -634,7 +634,7 @@ void dnsresourcerecord_encode(DNSResourceRecord *rr, Rope *string_buf)
         {
             LOG_DEBUG("unknown resource record type");
             uint16_t size = buffer_length(rr->data);
-            rope_append_bytes(string_buf, (uint8_t *)&size, 2); 
+            rope_append_bytes(string_buf, (uint8_t *)&size, 2);
             rope_append_buffer(string_buf, rr->data);
             break;
         }
@@ -645,7 +645,7 @@ Buffer *dnsmessage_encode(DNSMessage *message)
 {
     Rope *string_buf = rope_new();
     dnsmessage_encode_header(message, string_buf);
-   
+
     void enc_question(List *l, void *ctx, void *item, bool *keep_going) {
         DNSQuestion *question = (DNSQuestion *)item;
         dnsquestion_encode(question, string_buf);
