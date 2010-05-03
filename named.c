@@ -124,10 +124,6 @@ static void drop_privileges(const char *pw_name)
     }
 }
 
-void named_handle_request(DNSRequest *request, void *ctx) {
-    LOG_DEBUG("named_handle_request");
-}
-
 int main(int argc, char **argv)
 {
     LOG_INFO("startup")

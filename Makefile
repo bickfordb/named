@@ -1,4 +1,5 @@
 CC ?= gcc
+CFLAGS += -Wall
 CFLAGS += -std=c99
 CFLAGS += $$(pkg-config --cflags --libs glib-2.0)
 CFLAGS += $$(pkg-config --cflags --libs libevent)
