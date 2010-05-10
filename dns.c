@@ -6,6 +6,7 @@
 #include <string.h>
 #include <event2/util.h>
 #include <event2/event_struct.h>
+#include <arpa/inet.h>
 #include <sys/socket.h>
 
 #include "buffer.h"
@@ -50,7 +51,7 @@ DNSQuestion *dnsquestion_copy(DNSQuestion *other);
 DNSRequest *dnsrequest_new(DNSPort *port, struct sockaddr *src_address, socklen_t src_address_len, DNSMessage *message, evutil_socket_t socket);
 DNSMessage *dnsmessage_copy(DNSMessage *other);
 void dnsresponse_free(DNSResponse *response);
-Buffer *dns_encode_label(char *name);
+Buffer *dns_encode_label(const char *name);
 
 void dnsport_flush(DNSPort *port) {
 
@@ -558,7 +559,7 @@ void dnsquestion_encode(DNSQuestion *question, Rope *string_buf)
  * For example 'hi.there.com' is encoded as [2 'h' 'i' 5 't' h' 'e' 'r' 'e' 3
  * 'c' 'o' 'm' 0]
  */
-Buffer *dns_encode_label(char *name) {
+Buffer *dns_encode_label(const char *name) {
     size_t n = strlen(name);
     while ((n > 0) && (name[n - 1] == '.'))
         n--;
@@ -582,16 +583,29 @@ Buffer *dns_encode_label(char *name) {
 
 void dnsresourcerecord_encode(DNSResourceRecord *rr, Rope *string_buf)
 {
-    Buffer *label_buf = dns_encode_label(rr->name);
-    rope_append_buffer(string_buf, label_buf);
-    buffer_free(label_buf);
-    uint16_t qtype = htons(rr->qtype);
-    uint16_t qclass = htons(rr->qclass);
-    int32_t ttl = 0;
-    rope_append_bytes(string_buf, (void *)&qtype, sizeof(qtype));
-    rope_append_bytes(string_buf, (void *)&qclass, sizeof(qclass));
-    rope_append_bytes(string_buf, (void *)&ttl, sizeof(ttl));
+    Buffer *encoded_buf = NULL;
     switch (rr->qtype) {
+    case DNSHostQueryType:
+        {
+            char *host_bytes = (char *)buffer_data(rr->data);
+            size_t host_len = buffer_length(rr->data);
+            if (host_len == 4) {
+                encoded_buf = buffer_copy(rr->data);
+            } else {
+                encoded_buf = buffer_empty(4);
+                if (inet_pton(AF_INET, host_bytes, (char *)buffer_data(encoded_buf)) < 0) {
+                    LOG_ERROR("unable to convert address: %s", host_bytes);
+                    buffer_free(encoded_buf);
+                    encoded_buf = NULL;
+                }
+            } 
+        }
+        break;
+    case DNSCanonicalQueryType:
+        {
+            encoded_buf = dns_encode_label((const char *)buffer_data(rr->data));
+        }
+        break;
     case DNSTxtQueryType:
         {
             size_t remaining = buffer_length(rr->data);
@@ -608,22 +622,35 @@ void dnsresourcerecord_encode(DNSResourceRecord *rr, Rope *string_buf)
                 remaining -= chunk_size;
                 rope_append_bytes(r, chunk, sizeof(chunk));
             }
-            Buffer *b = rope_flatten(r);
-            uint16_t size = htons(buffer_length(b));
-            rope_append_bytes(string_buf, (const void *)&size, 2);
-            rope_append_buffer(string_buf, b);
-            buffer_free(b);
-            break;
+            encoded_buf = rope_flatten(r);
+            rope_free(r);
         }
+        break;
     default:
         {
-            LOG_DEBUG("unknown resource record type");
-            uint16_t size = buffer_length(rr->data);
-            rope_append_bytes(string_buf, (uint8_t *)&size, 2);
-            rope_append_buffer(string_buf, rr->data);
-            break;
+        LOG_DEBUG("unexpected query type (%d), using raw encoding", (int)rr->qtype);
         }
+        break;
     }
+
+    if (encoded_buf == NULL) {
+        LOG_DEBUG("copying raw resource data");
+        encoded_buf = buffer_copy(rr->data);
+    }
+    Buffer *label_buf = dns_encode_label(rr->name);
+    rope_append_buffer(string_buf, label_buf);
+    buffer_free(label_buf);
+    uint16_t qtype = htons(rr->qtype);
+    uint16_t qclass = htons(rr->qclass);
+    int32_t ttl = 0;
+    uint16_t length = htons(buffer_length(encoded_buf));
+    rope_append_bytes(string_buf, (void *)&qtype, sizeof(qtype));
+    rope_append_bytes(string_buf, (void *)&qclass, sizeof(qclass));
+    rope_append_bytes(string_buf, (void *)&ttl, sizeof(ttl));
+    rope_append_bytes(string_buf, (uint8_t *)&length, 2);
+    LOG_DEBUG("msg size: %d", (int)length);
+    rope_append_buffer(string_buf, encoded_buf);
+    buffer_free(encoded_buf);
 }
 
 Buffer *dnsmessage_encode(DNSMessage *message)

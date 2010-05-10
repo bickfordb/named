@@ -26,4 +26,6 @@
 delete from responses where name = 'foo.' or name = 'foo.com.';
 insert into responses (name, qclass, qtype, ttl, rdata) values ('foo.', 1, 16, 300, 'hey');
 insert into responses (name, qclass, qtype, ttl, rdata) values ('foo.com.', 1, 16, 300, 'hey foo.com');
+insert into responses (name, qclass, qtype, ttl, rdata) values ('foo.com.', 1, 1, 300, '192.168.1.1');
+insert into responses (name, qclass, qtype, ttl, rdata) values ('www.foo.com.', 1, 5, 300, 'foo.com');
  

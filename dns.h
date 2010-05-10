@@ -1,3 +1,4 @@
+#include <event-config.h>
 #include <event2/event.h>
 
 #ifndef __DNS_H__

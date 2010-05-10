@@ -11,6 +11,7 @@ struct _Rope {
     size_t length; 
 };
 
+
 Rope *rope_new() { 
     Rope *r = calloc(1, sizeof(Rope));
     r->buffers = list_new();
