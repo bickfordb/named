@@ -1,3 +1,3 @@
 #include "log.h"
 
-LogLevel log_level = LogDebugLevel;
+LogLevel log_level = LogInfoLevel;

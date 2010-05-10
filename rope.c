@@ -69,14 +69,15 @@ Buffer *rope_slice(Rope *r, ssize_t start, ssize_t end) {
     }
     if (start >= r->length) {
         start = r->length - 1;
-    } else if (start < 0)
+    } else if (start < 0) {
         start = 0;
-
+    }
 
     if (end >= r->length) {
         end = r->length - 1;
-    } else if (end < 0)
+    } else if (end < 0) {
         end = 0;
+    }
 
     size_t result_len = end - start;
     Buffer *result = buffer_empty(result_len);
