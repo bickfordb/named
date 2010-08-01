@@ -1,0 +1,14 @@
+Name:                named
+Version:             0.1
+Description:         A daemon for remember names
+License:             GPL
+License-file:        LICENSE
+Author:              Brandon Bickford
+Maintainer:          bickfordb@gmail.com
+Build-Type:          Simple
+Cabal-Version:       >=1.2
+Executable named
+  Main-is:           Main.hs
+  Build-Depends:     base >= 3 && < 5, bytestring, cereal, network, network-bytestring, cmdargs
+  hs-source-dirs:    src
+
