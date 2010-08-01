@@ -2,7 +2,7 @@ CC ?= gcc
 CFLAGS += -Wall
 CFLAGS += -std=c99
 CFLAGS += $$(pkg-config --cflags --libs glib-2.0)
-CFLAGS += $$(pkg-config --cflags --libs libevent)
+CFLAGS += $$(pkg-config --cflags --libs libevent) -levent_pthreads
 CFLAGS += $$(pkg-config --cflags --libs sqlite3)
 
 # Nested functions are disabled by default on Darwin
@@ -21,7 +21,14 @@ bin/named: named.c list.c list.h dns.c dns.h log.h log.c buffer.h buffer.c util.
 
 clean-named:
 	- rm -rf bin/named
-	
+
+example: example.c
+	$(CC) $(CFLAGS) -o $@ $<
+
+run-example: example
+	./example
+
+
 clean: clean-named
 
 test: bin/named test.db
